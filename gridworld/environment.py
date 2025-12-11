@@ -574,3 +574,126 @@ class GridWorld:
             plt.close(fig)
 
         return fig
+
+    def render_to_array(self) -> np.ndarray:
+        """
+        Render the environment to a numpy array for GIF generation.
+
+        Returns:
+            numpy array of shape (height, width, 3) with RGB values
+        """
+        # Color mappings
+        COLOR_MAP = {
+            'red': '#E74C3C',
+            'blue': '#3498DB',
+            'green': '#2ECC71'
+        }
+
+        SIZE_MAP = {
+            'small': 0.15,
+            'medium': 0.25,
+            'large': 0.35
+        }
+
+        PATTERN_MAP = {
+            'solid': '',
+            'striped': '///',
+            'dotted': '...'
+        }
+
+        OPACITY_MAP = {
+            'transparent': 0.3,
+            'translucent': 0.6,
+            'opaque': 1.0
+        }
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+
+        # Draw grid
+        for i in range(self.grid_size + 1):
+            ax.axhline(y=i, color='lightgray', linewidth=0.5)
+            ax.axvline(x=i, color='lightgray', linewidth=0.5)
+
+        # Draw objects
+        for obj in self.objects.values():
+            x, y = obj.position
+            props = obj.get_properties()
+
+            color = COLOR_MAP.get(props['color'], '#888888')
+            size = SIZE_MAP.get(props['size'], 0.25)
+            pattern = PATTERN_MAP.get(props['pattern'], '')
+            opacity = OPACITY_MAP.get(props['opacity'], 1.0)
+
+            is_rewarding = obj.has_any_property(self.reward_properties)
+            edgecolor = 'gold' if is_rewarding else 'black'
+            linewidth = 3 if is_rewarding else 1
+
+            center_x = x + 0.5
+            center_y = self.grid_size - y - 0.5
+
+            if props['shape'] == 'circle':
+                patch = Circle(
+                    (center_x, center_y), size,
+                    facecolor=color, edgecolor=edgecolor,
+                    linewidth=linewidth, alpha=opacity, hatch=pattern
+                )
+            elif props['shape'] == 'square':
+                patch = Rectangle(
+                    (center_x - size, center_y - size), size * 2, size * 2,
+                    facecolor=color, edgecolor=edgecolor,
+                    linewidth=linewidth, alpha=opacity, hatch=pattern
+                )
+            else:
+                patch = RegularPolygon(
+                    (center_x, center_y), numVertices=3, radius=size * 1.2,
+                    facecolor=color, edgecolor=edgecolor,
+                    linewidth=linewidth, alpha=opacity, hatch=pattern
+                )
+
+            ax.add_patch(patch)
+
+        # Draw human agent
+        hx, hy = self.human_position
+        human_patch = Circle(
+            (hx + 0.5, self.grid_size - hy - 0.5), 0.35,
+            facecolor='#9B59B6', edgecolor='black', linewidth=2
+        )
+        ax.add_patch(human_patch)
+        ax.text(hx + 0.5, self.grid_size - hy - 0.5, 'H',
+                ha='center', va='center', fontsize=12, fontweight='bold', color='white')
+
+        # Draw robot agent
+        rx, ry = self.robot_position
+        robot_patch = Rectangle(
+            (rx + 0.15, self.grid_size - ry - 0.85), 0.7, 0.7,
+            facecolor='#34495E', edgecolor='black', linewidth=2
+        )
+        ax.add_patch(robot_patch)
+        ax.text(rx + 0.5, self.grid_size - ry - 0.5, 'R',
+                ha='center', va='center', fontsize=12, fontweight='bold', color='white')
+
+        # Set axis properties
+        ax.set_xlim(0, self.grid_size)
+        ax.set_ylim(0, self.grid_size)
+        ax.set_aspect('equal')
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+        # Add title
+        title_lines = [
+            f'Step: {self.step_count}/{self.max_steps}  |  '
+            f'Props: {self.num_distinct_properties} ({", ".join(self.active_categories)})',
+            f'Reward: {", ".join(sorted(self.reward_properties))}  |  '
+            f'H: {len(self.human_collected)}  R: {len(self.robot_collected)}'
+        ]
+        ax.set_title('\n'.join(title_lines), fontsize=10, pad=5)
+
+        # Convert to array
+        fig.canvas.draw()
+        # Get RGBA buffer and convert to RGB
+        buf = np.asarray(fig.canvas.buffer_rgba())
+        data = buf[:, :, :3]  # Drop alpha channel
+
+        plt.close(fig)
+
+        return data

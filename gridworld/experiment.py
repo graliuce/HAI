@@ -345,21 +345,25 @@ def run_property_variation_experiment(
     return all_results
 
 
-def render_episode_snapshot(
+def render_episode_gif(
     num_distinct_properties: int,
     config: ExperimentConfig,
     output_path: str,
-    snapshot_step: int = 0
+    max_steps: int = 50,
+    fps: int = 4
 ) -> None:
     """
-    Render and save a snapshot of one episode for visualization.
+    Render and save a GIF of an entire episode for visualization.
 
     Args:
         num_distinct_properties: Number of property categories to vary (1-5)
         config: Experiment configuration
-        output_path: Path to save the PNG image
-        snapshot_step: Which step to capture (0 = initial state)
+        output_path: Path to save the GIF
+        max_steps: Maximum number of steps to render
+        fps: Frames per second for the GIF
     """
+    import imageio
+
     # Create environment with a fixed seed for reproducibility
     env = GridWorld(
         grid_size=config.grid_size,
@@ -388,22 +392,34 @@ def render_episode_snapshot(
     human.reset(human_obs['reward_properties'])
     robot.reset()
 
-    # Run for snapshot_step steps
-    state = env.get_state_for_robot()
-    for _ in range(snapshot_step):
-        if env.done:
-            break
+    # Collect frames
+    frames = []
 
+    # Capture initial frame
+    frames.append(env.render_to_array())
+
+    state = env.get_state_for_robot()
+    step = 0
+
+    while not env.done and step < max_steps:
+        # Get actions
         human_action = human.get_action(human_obs)
         robot_action = robot.get_action(observation, state, training=False)
 
+        # Execute human action first
         env.human_position = env._apply_action(env.human_position, human_action)
+
+        # Step environment with robot action
         observation, _, _, _ = env.step(robot_action)
         human_obs = env.get_human_observation()
         state = env.get_state_for_robot()
 
-    # Render and save
-    env.render_to_image(save_path=output_path)
+        # Capture frame
+        frames.append(env.render_to_array())
+        step += 1
+
+    # Save as GIF
+    imageio.mimsave(output_path, frames, fps=fps, loop=0)
 
 
 def summarize_results(
