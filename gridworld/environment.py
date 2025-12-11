@@ -240,9 +240,7 @@ class GridWorld:
 
         # Check if done
         self.done = (
-            self.step_count >= self.max_steps or
-            len(self.objects) == 0 or
-            self._no_rewarding_objects_left()
+            self.step_count >= self.max_steps
         )
 
         info = {

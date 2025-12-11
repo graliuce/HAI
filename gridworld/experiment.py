@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from .environment import GridWorld
 from .agents.human import HumanAgent
 from .agents.robot import RobotAgent
+from tqdm import tqdm
 
 
 @dataclass
@@ -85,8 +86,7 @@ def run_episode(
     human.reset(human_obs['reward_properties'])
     result.reward_properties = human_obs['reward_properties']
 
-    if training:
-        robot.reset()
+    robot.reset()
 
     total_reward = 0.0
     state = env.get_state_for_robot()
@@ -308,7 +308,7 @@ def run_property_variation_experiment(
 
     base_seed = config.seed if config.seed is not None else 42
 
-    for seed_idx in range(num_seeds):
+    for seed_idx in tqdm(range(num_seeds)):
         seed = base_seed + seed_idx
 
         if verbose:

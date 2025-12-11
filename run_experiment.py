@@ -100,21 +100,23 @@ def plot_results(
     """
     Plot the experiment results.
 
-    Creates a plot showing evaluation returns vs. number of distinct properties.
+    Creates plots showing evaluation returns and training returns
+    vs. number of distinct properties.
     """
     prop_counts = sorted(summary.keys())
     eval_means = [summary[p]['eval_mean'] for p in prop_counts]
     eval_sems = [summary[p]['eval_sem'] for p in prop_counts]
+    train_means = [summary[p]['train_mean'] for p in prop_counts if 'train_mean' in summary[p]]
+    train_sems = [summary[p]['train_sem'] for p in prop_counts if 'train_sem' in summary[p]]
 
+    # Plot evaluation results
     fig, ax = plt.subplots(figsize=(10, 6))
-
-    # Plot with error bars
     ax.errorbar(
         prop_counts, eval_means, yerr=eval_sems,
         marker='o', markersize=10, linewidth=2, capsize=5,
-        color='blue', ecolor='lightblue', elinewidth=2
+        color='tab:blue', ecolor='tab:blue', elinewidth=2,
+        label='Evaluation'
     )
-
     ax.set_xlabel('Number of Distinct Properties', fontsize=12)
     ax.set_ylabel('Evaluation Return (Mean ± SEM)', fontsize=12)
     ax.set_title(
@@ -124,28 +126,39 @@ def plot_results(
         f'Ratio={config.reward_ratio})',
         fontsize=14
     )
-
     ax.set_xticks(prop_counts)
     ax.grid(True, alpha=0.3)
-
-    # Add trend line
-    z = np.polyfit(prop_counts, eval_means, 1)
-    p = np.poly1d(z)
-    ax.plot(
-        prop_counts, p(prop_counts),
-        '--', color='red', alpha=0.5,
-        label=f'Linear trend (slope={z[0]:.2f})'
-    )
-    ax.legend()
-
     plt.tight_layout()
-
-    # Save plot
     plot_path = os.path.join(output_dir, 'eval_returns_vs_properties.png')
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
     print(f"\nPlot saved to: {plot_path}")
-
     plt.close()
+
+    # Plot training results (mean ± sem)
+    if train_means and train_sems:
+        fig2, ax2 = plt.subplots(figsize=(10, 6))
+        ax2.errorbar(
+            prop_counts, train_means, yerr=train_sems,
+            marker='o', markersize=10, linewidth=2, capsize=5,
+            color='tab:green', ecolor='tab:green', elinewidth=2,
+            label='Training'
+        )
+        ax2.set_xlabel('Number of Distinct Properties', fontsize=12)
+        ax2.set_ylabel('Training Return (Mean ± SEM)', fontsize=12)
+        ax2.set_title(
+            f'Training Performance vs. Property Complexity\n'
+            f'(K={config.num_rewarding_properties}, '
+            f'Objects={config.num_objects}, '
+            f'Ratio={config.reward_ratio})',
+            fontsize=14
+        )
+        ax2.set_xticks(prop_counts)
+        ax2.grid(True, alpha=0.3)
+        plt.tight_layout()
+        train_plot_path = os.path.join(output_dir, 'train_returns_vs_properties.png')
+        plt.savefig(train_plot_path, dpi=150, bbox_inches='tight')
+        print(f"Train results plot saved to: {train_plot_path}")
+        plt.close()
 
 
 def plot_training_curves(
