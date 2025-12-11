@@ -21,7 +21,8 @@ import numpy as np
 from gridworld.experiment import (
     ExperimentConfig,
     run_property_variation_experiment,
-    summarize_results
+    summarize_results,
+    render_episode_snapshot
 )
 
 
@@ -159,6 +160,35 @@ def plot_results(
         plt.savefig(train_plot_path, dpi=150, bbox_inches='tight')
         print(f"Train results plot saved to: {train_plot_path}")
         plt.close()
+
+
+def render_episode_snapshots(
+    property_counts: list,
+    output_dir: str,
+    config: ExperimentConfig
+):
+    """
+    Render and save episode snapshots for each property count.
+
+    Args:
+        property_counts: List of distinct property counts
+        output_dir: Directory to save images
+        config: Experiment configuration
+    """
+    print("\nRendering episode snapshots...")
+
+    for num_props in property_counts:
+        output_path = os.path.join(
+            output_dir,
+            f'episode_snapshot_{num_props}_props.png'
+        )
+        render_episode_snapshot(
+            num_distinct_properties=num_props,
+            config=config,
+            output_path=output_path,
+            snapshot_step=0  # Initial state
+        )
+        print(f"  Saved snapshot for {num_props} distinct properties: {output_path}")
 
 
 def plot_training_curves(
@@ -306,6 +336,7 @@ def main():
         try:
             plot_results(summary, args.output_dir, config)
             plot_training_curves(results, args.output_dir)
+            render_episode_snapshots(property_counts, args.output_dir, config)
         except Exception as e:
             print(f"Warning: Could not create plots: {e}")
 

@@ -345,6 +345,67 @@ def run_property_variation_experiment(
     return all_results
 
 
+def render_episode_snapshot(
+    num_distinct_properties: int,
+    config: ExperimentConfig,
+    output_path: str,
+    snapshot_step: int = 0
+) -> None:
+    """
+    Render and save a snapshot of one episode for visualization.
+
+    Args:
+        num_distinct_properties: Number of property categories to vary (1-5)
+        config: Experiment configuration
+        output_path: Path to save the PNG image
+        snapshot_step: Which step to capture (0 = initial state)
+    """
+    # Create environment with a fixed seed for reproducibility
+    env = GridWorld(
+        grid_size=config.grid_size,
+        num_objects=config.num_objects,
+        reward_ratio=config.reward_ratio,
+        num_rewarding_properties=config.num_rewarding_properties,
+        num_distinct_properties=num_distinct_properties,
+        seed=config.seed
+    )
+
+    # Create agents
+    human = HumanAgent()
+    robot = RobotAgent(
+        num_actions=env.NUM_ACTIONS,
+        learning_rate=config.learning_rate,
+        discount_factor=config.discount_factor,
+        epsilon_start=0.0,  # No exploration for visualization
+        epsilon_end=0.0,
+        epsilon_decay=1.0,
+        seed=config.seed
+    )
+
+    # Reset environment
+    observation = env.reset()
+    human_obs = env.get_human_observation()
+    human.reset(human_obs['reward_properties'])
+    robot.reset()
+
+    # Run for snapshot_step steps
+    state = env.get_state_for_robot()
+    for _ in range(snapshot_step):
+        if env.done:
+            break
+
+        human_action = human.get_action(human_obs)
+        robot_action = robot.get_action(observation, state, training=False)
+
+        env.human_position = env._apply_action(env.human_position, human_action)
+        observation, _, _, _ = env.step(robot_action)
+        human_obs = env.get_human_observation()
+        state = env.get_state_for_robot()
+
+    # Render and save
+    env.render_to_image(save_path=output_path)
+
+
 def summarize_results(
     results: Dict[int, List[ExperimentResult]]
 ) -> Dict[int, Dict[str, float]]:
