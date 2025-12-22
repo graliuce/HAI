@@ -159,7 +159,7 @@ def run_training(
     """
     rewards = []
 
-    for episode in range(num_episodes):
+    for episode in tqdm(range(num_episodes)):
         result = run_episode(env, human, robot, training=True)
         rewards.append(result.robot_reward)
 
@@ -416,7 +416,7 @@ def render_episode_gif(
         reward_ratio=config.reward_ratio,
         num_rewarding_properties=config.num_rewarding_properties,
         num_distinct_properties=num_distinct_properties,
-        seed=config.seed
+        seed=np.random.randint(0, 1000000)
     )
 
     # Create a config with no exploration for visualization
@@ -435,7 +435,7 @@ def render_episode_gif(
         target_update_freq=config.target_update_freq,
         learning_starts=config.learning_starts,
         hidden_dims=config.hidden_dims,
-        seed=config.seed
+        seed=np.random.randint(0, 1000000)
     )
 
     # Create agents

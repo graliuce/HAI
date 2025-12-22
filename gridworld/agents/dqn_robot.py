@@ -106,13 +106,13 @@ class DQNRobotAgent:
     def __init__(
         self,
         num_actions: int = 5,
-        learning_rate: float = 1e-4,
+        learning_rate: float = 2.5e-4,
         discount_factor: float = 0.99,
         epsilon_start: float = 1.0,
         epsilon_end: float = 0.05,
         epsilon_decay: float = 0.995,
         buffer_size: int = 100000,
-        batch_size: int = 64,
+        batch_size: int = 128,
         target_update_freq: int = 100,
         learning_starts: int = 1000,
         hidden_dims: List[int] = None,
@@ -197,7 +197,7 @@ class DQNRobotAgent:
         # Replay buffer
         self.replay_buffer = ReplayBuffer(buffer_size)
 
-        # Track inferred reward properties (for heuristic fallback)
+        # Track inferred reward properties
         self.inferred_properties: Dict[str, float] = defaultdict(float)
         self.property_counts: Dict[str, int] = defaultdict(int)
 

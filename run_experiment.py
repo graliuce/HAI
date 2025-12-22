@@ -62,16 +62,16 @@ def parse_args():
 
     # DQN parameters
     parser.add_argument(
-        "--learning-rate", type=float, default=1e-4,
-        help="Learning rate (default: 1e-4)"
+        "--learning-rate", type=float, default=2.5e-4,
+        help="Learning rate (default: 2.5e-4)"
     )
     parser.add_argument(
         "--buffer-size", type=int, default=100000,
         help="Size of replay buffer (default: 100000)"
     )
     parser.add_argument(
-        "--batch-size", type=int, default=64,
-        help="Batch size for training (default: 64)"
+        "--batch-size", type=int, default=128,
+        help="Batch size for training (default: 128)"
     )
     parser.add_argument(
         "--target-update-freq", type=int, default=100,
