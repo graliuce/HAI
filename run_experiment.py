@@ -60,6 +60,39 @@ def parse_args():
         help="Number of evaluation episodes (default: 10)"
     )
 
+    # Agent type
+    parser.add_argument(
+        "--agent-type", type=str, default="dqn",
+        choices=["tabular", "dqn"],
+        help="Type of agent to use: 'tabular' for Q-learning, 'dqn' for Deep Q-Network (default: dqn)"
+    )
+
+    # DQN-specific parameters
+    parser.add_argument(
+        "--dqn-buffer-size", type=int, default=100000,
+        help="Size of DQN replay buffer (default: 100000)"
+    )
+    parser.add_argument(
+        "--dqn-batch-size", type=int, default=64,
+        help="Batch size for DQN training (default: 64)"
+    )
+    parser.add_argument(
+        "--dqn-target-update-freq", type=int, default=100,
+        help="How often to update DQN target network (default: 100)"
+    )
+    parser.add_argument(
+        "--dqn-learning-starts", type=int, default=500,
+        help="Number of steps before DQN starts training (default: 500)"
+    )
+    parser.add_argument(
+        "--dqn-hidden-dims", type=str, default="128,128",
+        help="Comma-separated hidden layer dimensions for DQN (default: 128,128)"
+    )
+    parser.add_argument(
+        "--learning-rate", type=float, default=1e-4,
+        help="Learning rate (default: 1e-4 for DQN, 0.1 for tabular)"
+    )
+
     # Experiment parameters
     parser.add_argument(
         "--num-seeds", type=int, default=5,
@@ -243,6 +276,14 @@ def main():
     # Parse property counts
     property_counts = [int(x) for x in args.property_counts.split(',')]
 
+    # Parse DQN hidden dimensions
+    dqn_hidden_dims = [int(x) for x in args.dqn_hidden_dims.split(',')]
+
+    # Set learning rate based on agent type if not explicitly set
+    learning_rate = args.learning_rate
+    if args.agent_type == 'tabular' and args.learning_rate == 1e-4:
+        learning_rate = 0.1  # Default for tabular
+
     # Create config
     config = ExperimentConfig(
         grid_size=args.grid_size,
@@ -251,6 +292,13 @@ def main():
         num_rewarding_properties=args.num_rewarding_properties,
         num_train_episodes=args.train_episodes,
         num_eval_episodes=args.eval_episodes,
+        learning_rate=learning_rate,
+        agent_type=args.agent_type,
+        dqn_buffer_size=args.dqn_buffer_size,
+        dqn_batch_size=args.dqn_batch_size,
+        dqn_target_update_freq=args.dqn_target_update_freq,
+        dqn_learning_starts=args.dqn_learning_starts,
+        dqn_hidden_dims=dqn_hidden_dims,
         seed=args.seed
     )
 
@@ -258,15 +306,23 @@ def main():
     print("Gridworld Multi-Agent Experiment")
     print("=" * 60)
     print(f"\nConfiguration:")
+    print(f"  Agent type: {config.agent_type}")
     print(f"  Grid size: {config.grid_size}x{config.grid_size}")
     print(f"  Number of objects: {config.num_objects}")
     print(f"  Reward ratio: {config.reward_ratio}")
     print(f"  Rewarding properties (K): {config.num_rewarding_properties}")
     print(f"  Training episodes: {config.num_train_episodes}")
     print(f"  Evaluation episodes: {config.num_eval_episodes}")
+    print(f"  Learning rate: {config.learning_rate}")
     print(f"  Property counts to test: {property_counts}")
     print(f"  Number of seeds: {args.num_seeds}")
     print(f"  Base seed: {args.seed}")
+    if config.agent_type == 'dqn':
+        print(f"  DQN buffer size: {config.dqn_buffer_size}")
+        print(f"  DQN batch size: {config.dqn_batch_size}")
+        print(f"  DQN target update freq: {config.dqn_target_update_freq}")
+        print(f"  DQN learning starts: {config.dqn_learning_starts}")
+        print(f"  DQN hidden dims: {config.dqn_hidden_dims}")
 
     # Run experiment
     print("\n" + "=" * 60)
@@ -314,18 +370,29 @@ def main():
 
     # Save summary as JSON
     summary_path = os.path.join(args.output_dir, 'summary.json')
+    config_dict = {
+        'agent_type': config.agent_type,
+        'grid_size': config.grid_size,
+        'num_objects': config.num_objects,
+        'reward_ratio': config.reward_ratio,
+        'num_rewarding_properties': config.num_rewarding_properties,
+        'num_train_episodes': config.num_train_episodes,
+        'num_eval_episodes': config.num_eval_episodes,
+        'learning_rate': config.learning_rate,
+        'num_seeds': args.num_seeds,
+        'base_seed': args.seed
+    }
+    if config.agent_type == 'dqn':
+        config_dict.update({
+            'dqn_buffer_size': config.dqn_buffer_size,
+            'dqn_batch_size': config.dqn_batch_size,
+            'dqn_target_update_freq': config.dqn_target_update_freq,
+            'dqn_learning_starts': config.dqn_learning_starts,
+            'dqn_hidden_dims': config.dqn_hidden_dims
+        })
     with open(summary_path, 'w') as f:
         json.dump({
-            'config': {
-                'grid_size': config.grid_size,
-                'num_objects': config.num_objects,
-                'reward_ratio': config.reward_ratio,
-                'num_rewarding_properties': config.num_rewarding_properties,
-                'num_train_episodes': config.num_train_episodes,
-                'num_eval_episodes': config.num_eval_episodes,
-                'num_seeds': args.num_seeds,
-                'base_seed': args.seed
-            },
+            'config': config_dict,
             'summary': summary,
             'correlation': correlation,
             'timestamp': datetime.now().isoformat()

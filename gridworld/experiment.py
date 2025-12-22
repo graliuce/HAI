@@ -1,6 +1,6 @@
 """Experiment runner for the gridworld multi-agent task."""
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 from dataclasses import dataclass, field
 
@@ -8,6 +8,14 @@ from .environment import GridWorld
 from .agents.human import HumanAgent
 from .agents.robot import RobotAgent
 from tqdm import tqdm
+
+# Try to import DQN agent (requires PyTorch)
+try:
+    from .agents.dqn_robot import DQNRobotAgent
+    DQN_AVAILABLE = True
+except ImportError:
+    DQN_AVAILABLE = False
+    DQNRobotAgent = None
 
 
 @dataclass
@@ -25,12 +33,22 @@ class ExperimentConfig:
     num_eval_episodes: int = 10
     max_steps_per_episode: int = 100
 
-    # Robot learning parameters
+    # Robot learning parameters (shared)
     learning_rate: float = 0.1
     discount_factor: float = 0.95
     epsilon_start: float = 1.0
     epsilon_end: float = 0.05
     epsilon_decay: float = 0.995
+
+    # Agent type: 'tabular' or 'dqn'
+    agent_type: str = 'dqn'
+
+    # DQN-specific parameters
+    dqn_buffer_size: int = 100000
+    dqn_batch_size: int = 64
+    dqn_target_update_freq: int = 100
+    dqn_learning_starts: int = 500
+    dqn_hidden_dims: List[int] = field(default_factory=lambda: [128, 128])
 
     # Random seed
     seed: Optional[int] = None
@@ -63,7 +81,7 @@ class ExperimentResult:
 def run_episode(
     env: GridWorld,
     human: HumanAgent,
-    robot: RobotAgent,
+    robot: Union[RobotAgent, 'DQNRobotAgent'],
     training: bool = True
 ) -> EpisodeResult:
     """
@@ -72,7 +90,7 @@ def run_episode(
     Args:
         env: The GridWorld environment
         human: The human agent
-        robot: The robot agent
+        robot: The robot agent (tabular or DQN)
         training: Whether to update robot's Q-values
 
     Returns:
@@ -91,6 +109,9 @@ def run_episode(
     total_reward = 0.0
     state = env.get_state_for_robot()
 
+    # Check if robot is DQN type (needs observations for update)
+    is_dqn = DQN_AVAILABLE and isinstance(robot, DQNRobotAgent)
+
     while not env.done:
         # Get actions
         human_action = human.get_action(human_obs)
@@ -105,7 +126,15 @@ def run_episode(
 
         # Update robot if training
         if training:
-            robot.update(state, robot_action, reward, next_state, done)
+            if is_dqn:
+                # DQN needs observations for feature encoding
+                robot.update(
+                    state, robot_action, reward, next_state, done,
+                    observation=observation, next_observation=next_observation
+                )
+            else:
+                # Tabular Q-learning uses state tuples
+                robot.update(state, robot_action, reward, next_state, done)
 
         total_reward += reward
         state = next_state
@@ -198,6 +227,58 @@ def run_evaluation(
     return results
 
 
+def create_robot_agent(
+    config: ExperimentConfig,
+    env: GridWorld,
+    num_distinct_properties: int
+) -> Union[RobotAgent, 'DQNRobotAgent']:
+    """
+    Create a robot agent based on configuration.
+
+    Args:
+        config: Experiment configuration
+        env: The GridWorld environment
+        num_distinct_properties: Number of distinct property categories
+
+    Returns:
+        Robot agent (tabular or DQN)
+    """
+    from .objects import PROPERTY_CATEGORIES
+
+    if config.agent_type == 'dqn':
+        if not DQN_AVAILABLE:
+            raise ImportError(
+                "DQN agent requires PyTorch. Install with: pip install torch"
+            )
+        active_categories = PROPERTY_CATEGORIES[:num_distinct_properties]
+        return DQNRobotAgent(
+            num_actions=env.NUM_ACTIONS,
+            learning_rate=config.learning_rate,
+            discount_factor=config.discount_factor,
+            epsilon_start=config.epsilon_start,
+            epsilon_end=config.epsilon_end,
+            epsilon_decay=config.epsilon_decay,
+            buffer_size=config.dqn_buffer_size,
+            batch_size=config.dqn_batch_size,
+            target_update_freq=config.dqn_target_update_freq,
+            learning_starts=config.dqn_learning_starts,
+            hidden_dims=config.dqn_hidden_dims,
+            grid_size=config.grid_size,
+            active_categories=active_categories,
+            seed=config.seed
+        )
+    else:
+        return RobotAgent(
+            num_actions=env.NUM_ACTIONS,
+            learning_rate=config.learning_rate,
+            discount_factor=config.discount_factor,
+            epsilon_start=config.epsilon_start,
+            epsilon_end=config.epsilon_end,
+            epsilon_decay=config.epsilon_decay,
+            seed=config.seed
+        )
+
+
 def run_experiment(
     num_distinct_properties: int,
     config: ExperimentConfig,
@@ -217,6 +298,7 @@ def run_experiment(
     if verbose:
         print(f"\n{'='*60}")
         print(f"Running experiment with {num_distinct_properties} distinct properties")
+        print(f"Agent type: {config.agent_type}")
         print(f"{'='*60}")
 
     # Create environment
@@ -231,15 +313,7 @@ def run_experiment(
 
     # Create agents
     human = HumanAgent()
-    robot = RobotAgent(
-        num_actions=env.NUM_ACTIONS,
-        learning_rate=config.learning_rate,
-        discount_factor=config.discount_factor,
-        epsilon_start=config.epsilon_start,
-        epsilon_end=config.epsilon_end,
-        epsilon_decay=config.epsilon_decay,
-        seed=config.seed
-    )
+    robot = create_robot_agent(config, env, num_distinct_properties)
 
     # Run training
     if verbose:
@@ -331,6 +405,12 @@ def run_property_variation_experiment(
                 epsilon_start=config.epsilon_start,
                 epsilon_end=config.epsilon_end,
                 epsilon_decay=config.epsilon_decay,
+                agent_type=config.agent_type,
+                dqn_buffer_size=config.dqn_buffer_size,
+                dqn_batch_size=config.dqn_batch_size,
+                dqn_target_update_freq=config.dqn_target_update_freq,
+                dqn_learning_starts=config.dqn_learning_starts,
+                dqn_hidden_dims=config.dqn_hidden_dims,
                 seed=seed
             )
 
@@ -374,17 +454,29 @@ def render_episode_gif(
         seed=config.seed
     )
 
-    # Create agents
-    human = HumanAgent()
-    robot = RobotAgent(
-        num_actions=env.NUM_ACTIONS,
+    # Create a config with no exploration for visualization
+    vis_config = ExperimentConfig(
+        grid_size=config.grid_size,
+        num_objects=config.num_objects,
+        reward_ratio=config.reward_ratio,
+        num_rewarding_properties=config.num_rewarding_properties,
         learning_rate=config.learning_rate,
         discount_factor=config.discount_factor,
         epsilon_start=0.0,  # No exploration for visualization
         epsilon_end=0.0,
         epsilon_decay=1.0,
+        agent_type=config.agent_type,
+        dqn_buffer_size=config.dqn_buffer_size,
+        dqn_batch_size=config.dqn_batch_size,
+        dqn_target_update_freq=config.dqn_target_update_freq,
+        dqn_learning_starts=config.dqn_learning_starts,
+        dqn_hidden_dims=config.dqn_hidden_dims,
         seed=config.seed
     )
+
+    # Create agents
+    human = HumanAgent()
+    robot = create_robot_agent(vis_config, env, num_distinct_properties)
 
     # Reset environment
     observation = env.reset()
