@@ -1,7 +1,7 @@
 """DQN Robot agent using deep Q-learning for function approximation."""
 
 from collections import defaultdict, deque
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 import random
 import numpy as np
 
@@ -379,7 +379,6 @@ class DQNRobotAgent:
     def get_action(
         self,
         observation: dict,
-        state: Tuple = None,  # Unused, kept for compatibility
         training: bool = True
     ) -> int:
         """
@@ -389,7 +388,6 @@ class DQNRobotAgent:
 
         Args:
             observation: Current observation
-            state: Unused (kept for API compatibility with tabular agent)
             training: Whether we're in training mode
 
         Returns:
@@ -432,22 +430,18 @@ class DQNRobotAgent:
 
     def update(
         self,
-        state: Tuple,
         action: int,
         reward: float,
-        next_state: Tuple,
         done: bool,
-        observation: dict = None,
-        next_observation: dict = None
+        observation: dict,
+        next_observation: dict
     ):
         """
         Update Q-network using experience replay.
 
         Args:
-            state: Current state (unused, kept for compatibility)
             action: Action taken
             reward: Reward received
-            next_state: Next state (unused, kept for compatibility)
             done: Whether episode is done
             observation: Current observation (for feature encoding)
             next_observation: Next observation (for feature encoding)
@@ -455,10 +449,6 @@ class DQNRobotAgent:
         self.total_reward += reward
         self.steps += 1
         self.total_steps += 1
-
-        # If observations not provided, skip (can't train without features)
-        if observation is None or next_observation is None:
-            return
 
         # Encode observations
         state_features = self._encode_observation(observation)
