@@ -1,11 +1,10 @@
 """Agent implementations."""
 
 from .human import HumanAgent, HumanAgentAStar
-from .robot import RobotAgent, RobotAgentWithPropertyTracking
+from .dqn_robot import DQNRobotAgent
 
 __all__ = [
     'HumanAgent',
     'HumanAgentAStar',
-    'RobotAgent',
-    'RobotAgentWithPropertyTracking'
+    'DQNRobotAgent',
 ]

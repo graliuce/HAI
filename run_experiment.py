@@ -42,8 +42,8 @@ def parse_args():
         help="Number of objects in the grid (default: 20)"
     )
     parser.add_argument(
-        "--reward-ratio", type=float, default=0.3,
-        help="Proportion of objects that are rewarding (default: 0.3)"
+        "--reward-ratio", type=float, default=0.4,
+        help="Proportion of objects that are rewarding (default: 0.4)"
     )
     parser.add_argument(
         "--num-rewarding-properties", type=int, default=2,
@@ -58,6 +58,32 @@ def parse_args():
     parser.add_argument(
         "--eval-episodes", type=int, default=10,
         help="Number of evaluation episodes (default: 10)"
+    )
+
+    # DQN parameters
+    parser.add_argument(
+        "--learning-rate", type=float, default=2.5e-4,
+        help="Learning rate (default: 2.5e-4)"
+    )
+    parser.add_argument(
+        "--buffer-size", type=int, default=100000,
+        help="Size of replay buffer (default: 100000)"
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=128,
+        help="Batch size for training (default: 128)"
+    )
+    parser.add_argument(
+        "--target-update-freq", type=int, default=100,
+        help="How often to update target network (default: 100)"
+    )
+    parser.add_argument(
+        "--learning-starts", type=int, default=500,
+        help="Number of steps before training starts (default: 500)"
+    )
+    parser.add_argument(
+        "--hidden-dims", type=str, default="128,128",
+        help="Comma-separated hidden layer dimensions (default: 128,128)"
     )
 
     # Experiment parameters
@@ -119,7 +145,7 @@ def plot_results(
         label='Evaluation'
     )
     ax.set_xlabel('Number of Distinct Properties', fontsize=12)
-    ax.set_ylabel('Evaluation Return (Mean ± SEM)', fontsize=12)
+    ax.set_ylabel('Evaluation Return (Mean +/- SEM)', fontsize=12)
     ax.set_title(
         f'Robot Performance vs. Property Complexity\n'
         f'(K={config.num_rewarding_properties}, '
@@ -135,7 +161,7 @@ def plot_results(
     print(f"\nPlot saved to: {plot_path}")
     plt.close()
 
-    # Plot training results (mean ± sem)
+    # Plot training results (mean +/- sem)
     if train_means and train_sems:
         fig2, ax2 = plt.subplots(figsize=(10, 6))
         ax2.errorbar(
@@ -145,7 +171,7 @@ def plot_results(
             label='Training'
         )
         ax2.set_xlabel('Number of Distinct Properties', fontsize=12)
-        ax2.set_ylabel('Training Return (Mean ± SEM)', fontsize=12)
+        ax2.set_ylabel('Training Return (Mean +/- SEM)', fontsize=12)
         ax2.set_title(
             f'Training Performance vs. Property Complexity\n'
             f'(K={config.num_rewarding_properties}, '
@@ -243,6 +269,9 @@ def main():
     # Parse property counts
     property_counts = [int(x) for x in args.property_counts.split(',')]
 
+    # Parse hidden dimensions
+    hidden_dims = [int(x) for x in args.hidden_dims.split(',')]
+
     # Create config
     config = ExperimentConfig(
         grid_size=args.grid_size,
@@ -251,11 +280,17 @@ def main():
         num_rewarding_properties=args.num_rewarding_properties,
         num_train_episodes=args.train_episodes,
         num_eval_episodes=args.eval_episodes,
+        learning_rate=args.learning_rate,
+        buffer_size=args.buffer_size,
+        batch_size=args.batch_size,
+        target_update_freq=args.target_update_freq,
+        learning_starts=args.learning_starts,
+        hidden_dims=hidden_dims,
         seed=args.seed
     )
 
     print("=" * 60)
-    print("Gridworld Multi-Agent Experiment")
+    print("Gridworld Multi-Agent Experiment (DQN)")
     print("=" * 60)
     print(f"\nConfiguration:")
     print(f"  Grid size: {config.grid_size}x{config.grid_size}")
@@ -264,6 +299,12 @@ def main():
     print(f"  Rewarding properties (K): {config.num_rewarding_properties}")
     print(f"  Training episodes: {config.num_train_episodes}")
     print(f"  Evaluation episodes: {config.num_eval_episodes}")
+    print(f"  Learning rate: {config.learning_rate}")
+    print(f"  Buffer size: {config.buffer_size}")
+    print(f"  Batch size: {config.batch_size}")
+    print(f"  Target update freq: {config.target_update_freq}")
+    print(f"  Learning starts: {config.learning_starts}")
+    print(f"  Hidden dims: {config.hidden_dims}")
     print(f"  Property counts to test: {property_counts}")
     print(f"  Number of seeds: {args.num_seeds}")
     print(f"  Base seed: {args.seed}")
@@ -302,30 +343,37 @@ def main():
     print(f"\nCorrelation between property count and eval return: {correlation:.3f}")
 
     if correlation < -0.5:
-        print("✓ HYPOTHESIS SUPPORTED: Negative correlation observed!")
+        print("HYPOTHESIS SUPPORTED: Negative correlation observed!")
         print("  As distinct properties increase, robot performance decreases.")
     elif correlation < 0:
-        print("? WEAK SUPPORT: Slight negative correlation observed.")
+        print("WEAK SUPPORT: Slight negative correlation observed.")
     else:
-        print("✗ HYPOTHESIS NOT SUPPORTED: No negative correlation observed.")
+        print("HYPOTHESIS NOT SUPPORTED: No negative correlation observed.")
 
     # Save results
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Save summary as JSON
     summary_path = os.path.join(args.output_dir, 'summary.json')
+    config_dict = {
+        'grid_size': config.grid_size,
+        'num_objects': config.num_objects,
+        'reward_ratio': config.reward_ratio,
+        'num_rewarding_properties': config.num_rewarding_properties,
+        'num_train_episodes': config.num_train_episodes,
+        'num_eval_episodes': config.num_eval_episodes,
+        'learning_rate': config.learning_rate,
+        'buffer_size': config.buffer_size,
+        'batch_size': config.batch_size,
+        'target_update_freq': config.target_update_freq,
+        'learning_starts': config.learning_starts,
+        'hidden_dims': config.hidden_dims,
+        'num_seeds': args.num_seeds,
+        'base_seed': args.seed
+    }
     with open(summary_path, 'w') as f:
         json.dump({
-            'config': {
-                'grid_size': config.grid_size,
-                'num_objects': config.num_objects,
-                'reward_ratio': config.reward_ratio,
-                'num_rewarding_properties': config.num_rewarding_properties,
-                'num_train_episodes': config.num_train_episodes,
-                'num_eval_episodes': config.num_eval_episodes,
-                'num_seeds': args.num_seeds,
-                'base_seed': args.seed
-            },
+            'config': config_dict,
             'summary': summary,
             'correlation': correlation,
             'timestamp': datetime.now().isoformat()
