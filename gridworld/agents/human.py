@@ -33,7 +33,7 @@ class HumanAgent:
 
         Policy:
         1. Find the nearest rewarding object by L2 distance
-        2. Take a step on the shortest path toward it
+        2. Take a step on the shortest path toward it, avoiding non-rewarding objects
 
         Args:
             observation: Full observation including reward_properties
@@ -73,23 +73,26 @@ class HumanAgent:
 
         self.current_target = nearest_pos
 
-        # Get action toward nearest object (greedy step)
-        return self._get_action_toward(position, nearest_pos)
+        # Get action toward nearest object (avoiding non-rewarding objects)
+        return self._get_action_toward(position, nearest_pos, objects)
 
     def _get_action_toward(
         self,
         current: Tuple[int, int],
-        target: Tuple[int, int]
+        target: Tuple[int, int],
+        objects: dict
     ) -> int:
         """
         Get the action to move from current position toward target.
 
         Uses a simple greedy approach: move in the direction that
-        reduces the distance to the target the most.
+        reduces the distance to the target the most, while avoiding
+        non-rewarding objects.
 
         Args:
             current: Current position (x, y)
             target: Target position (x, y)
+            objects: Dictionary of objects in the environment
 
         Returns:
             Action (0=up, 1=down, 2=left, 3=right, 4=stay)
@@ -100,20 +103,55 @@ class HumanAgent:
         if current == target:
             return 4  # stay
 
+        # Create a map of non-rewarding object positions
+        non_rewarding_positions = set()
+        for obj_id, obj_data in objects.items():
+            props = obj_data['properties']
+            is_rewarding = any(prop_value in self.reward_properties 
+                             for prop_value in props.values())
+            if not is_rewarding:
+                non_rewarding_positions.add(obj_data['position'])
+
         dx = tx - cx
         dy = ty - cy
 
-        # Prioritize the larger displacement
+        # Try actions in order of preference based on distance to target
+        actions = []
         if abs(dx) >= abs(dy):
+            # Prioritize horizontal movement
             if dx > 0:
-                return 3  # right
+                actions = [3, 1 if dy > 0 else 0, 2]  # right, then vertical, then left
             else:
-                return 2  # left
+                actions = [2, 1 if dy > 0 else 0, 3]  # left, then vertical, then right
         else:
+            # Prioritize vertical movement
             if dy > 0:
-                return 1  # down
+                actions = [1, 3 if dx > 0 else 2, 0]  # down, then horizontal, then up
             else:
-                return 0  # up
+                actions = [0, 3 if dx > 0 else 2, 1]  # up, then horizontal, then down
+
+        # Try each action, avoiding non-rewarding objects
+        for action in actions:
+            next_pos = self._get_next_position(current, action)
+            if next_pos not in non_rewarding_positions:
+                return action
+
+        # If all preferred actions lead to non-rewarding objects, stay
+        return 4
+
+    def _get_next_position(self, position: Tuple[int, int], action: int) -> Tuple[int, int]:
+        """Get the next position after taking an action."""
+        x, y = position
+        if action == 0:  # up
+            return (x, y - 1)
+        elif action == 1:  # down
+            return (x, y + 1)
+        elif action == 2:  # left
+            return (x - 1, y)
+        elif action == 3:  # right
+            return (x + 1, y)
+        else:  # stay
+            return position
 
     @staticmethod
     def _l2_distance(pos1: Tuple[int, int], pos2: Tuple[int, int]) -> float:
@@ -140,9 +178,18 @@ class HumanAgentAStar(HumanAgent):
         self.path = []
 
     def get_action(self, observation: dict) -> int:
-        """Get action using A* pathfinding."""
+        """Get action using A* pathfinding that avoids non-rewarding objects."""
         position = observation['human_position']
         objects = observation['objects']
+
+        # Build set of non-rewarding object positions
+        non_rewarding_positions = set()
+        for obj_id, obj_data in objects.items():
+            props = obj_data['properties']
+            is_rewarding = any(prop_value in self.reward_properties 
+                             for prop_value in props.values())
+            if not is_rewarding:
+                non_rewarding_positions.add(obj_data['position'])
 
         # If we have a valid path, follow it
         if self.path and self.path[0] != position:
@@ -173,8 +220,8 @@ class HumanAgentAStar(HumanAgent):
             key=lambda p: self._l2_distance(position, p)
         )
 
-        # Calculate path using A*
-        self.path = self._astar(position, nearest_pos)
+        # Calculate path using A* (avoiding non-rewarding objects)
+        self.path = self._astar(position, nearest_pos, non_rewarding_positions)
 
         if len(self.path) <= 1:
             return 4  # Already at target or no path
@@ -207,12 +254,19 @@ class HumanAgentAStar(HumanAgent):
     def _astar(
         self,
         start: Tuple[int, int],
-        goal: Tuple[int, int]
+        goal: Tuple[int, int],
+        obstacles: Set[Tuple[int, int]]
     ) -> list:
         """
-        A* pathfinding algorithm.
+        A* pathfinding algorithm that avoids obstacles.
 
-        Returns list of positions from start to goal.
+        Args:
+            start: Starting position
+            goal: Goal position
+            obstacles: Set of positions to avoid (non-rewarding objects)
+
+        Returns:
+            List of positions from start to goal.
         """
         if start == goal:
             return [start]
@@ -234,7 +288,7 @@ class HumanAgentAStar(HumanAgent):
                     path.append(current)
                 return list(reversed(path))
 
-            for neighbor in self._get_neighbors(current):
+            for neighbor in self._get_neighbors(current, obstacles):
                 tentative_g = g_score[current] + 1
 
                 if neighbor not in g_score or tentative_g < g_score[neighbor]:
@@ -247,14 +301,15 @@ class HumanAgentAStar(HumanAgent):
         # No path found (shouldn't happen in open grid)
         return [start]
 
-    def _get_neighbors(self, pos: Tuple[int, int]) -> list:
-        """Get valid neighboring positions."""
+    def _get_neighbors(self, pos: Tuple[int, int], obstacles: Set[Tuple[int, int]]) -> list:
+        """Get valid neighboring positions, excluding obstacles."""
         x, y = pos
         neighbors = []
 
         for dx, dy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
             nx, ny = x + dx, y + dy
             if 0 <= nx < self.grid_size and 0 <= ny < self.grid_size:
-                neighbors.append((nx, ny))
+                if (nx, ny) not in obstacles:
+                    neighbors.append((nx, ny))
 
         return neighbors

@@ -68,7 +68,7 @@ class GridWorld:
         self.human_collected: List[GridObject] = []
         self.robot_collected: List[GridObject] = []
         self.step_count: int = 0
-        self.max_steps: int = 100
+        self.max_steps: int = 20
         self.done: bool = False
 
     def reset(self) -> Dict:
@@ -292,9 +292,11 @@ class GridWorld:
                 self.robot_collected.append(obj)
                 objects_to_remove.append(obj_id)
 
-                # Robot gets reward for collecting rewarding objects
+                # Robot gets reward for collecting rewarding objects, penalty for non-rewarding
                 if obj.has_any_property(self.reward_properties):
                     robot_reward += 1.0
+                else:
+                    robot_reward -= 1.0
 
         # Remove collected objects
         for obj_id in objects_to_remove:
