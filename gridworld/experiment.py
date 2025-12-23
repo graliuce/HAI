@@ -26,19 +26,21 @@ class ExperimentConfig:
     num_eval_episodes: int = 10
     max_steps_per_episode: int = 100
 
-    # DQN learning parameters
+    # DQN learning parameters (stable-baselines3 style)
     learning_rate: float = 1e-4
     discount_factor: float = 0.99
     epsilon_start: float = 1.0
     epsilon_end: float = 0.05
-    epsilon_decay: float = 0.995
+    exploration_fraction: float = 0.1  # Fraction of total timesteps for epsilon decay
 
     # DQN-specific parameters
     buffer_size: int = 100000
-    batch_size: int = 64
-    target_update_freq: int = 100
-    learning_starts: int = 500
-    hidden_dims: List[int] = field(default_factory=lambda: [128, 128])
+    batch_size: int = 32
+    target_update_freq: int = 10000
+    train_freq: int = 4
+    gradient_steps: int = 1
+    learning_starts: int = 1000
+    hidden_dims: List[int] = field(default_factory=lambda: [64, 64])
 
     # Random seed
     seed: Optional[int] = None
@@ -228,16 +230,21 @@ def create_robot_agent(
         DQN robot agent
     """
     active_categories = PROPERTY_CATEGORIES[:num_distinct_properties]
+    # Calculate total timesteps for exploration schedule
+    total_timesteps = config.num_train_episodes * config.max_steps_per_episode
     return DQNRobotAgent(
         num_actions=env.NUM_ACTIONS,
         learning_rate=config.learning_rate,
         discount_factor=config.discount_factor,
         epsilon_start=config.epsilon_start,
         epsilon_end=config.epsilon_end,
-        epsilon_decay=config.epsilon_decay,
+        exploration_fraction=config.exploration_fraction,
+        total_timesteps=total_timesteps,
         buffer_size=config.buffer_size,
         batch_size=config.batch_size,
         target_update_freq=config.target_update_freq,
+        train_freq=config.train_freq,
+        gradient_steps=config.gradient_steps,
         learning_starts=config.learning_starts,
         hidden_dims=config.hidden_dims,
         grid_size=config.grid_size,
@@ -370,10 +377,12 @@ def run_property_variation_experiment(
                 discount_factor=config.discount_factor,
                 epsilon_start=config.epsilon_start,
                 epsilon_end=config.epsilon_end,
-                epsilon_decay=config.epsilon_decay,
+                exploration_fraction=config.exploration_fraction,
                 buffer_size=config.buffer_size,
                 batch_size=config.batch_size,
                 target_update_freq=config.target_update_freq,
+                train_freq=config.train_freq,
+                gradient_steps=config.gradient_steps,
                 learning_starts=config.learning_starts,
                 hidden_dims=config.hidden_dims,
                 seed=seed
