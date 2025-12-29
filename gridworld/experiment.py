@@ -1,6 +1,6 @@
 """Experiment runner for the gridworld multi-agent task."""
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import numpy as np
 from dataclasses import dataclass, field
 
@@ -523,5 +523,321 @@ def summarize_results(
             'train_mean': np.mean(train_means),
             'train_std': np.std(train_means),
         }
+
+    return summary
+
+
+def create_variable_robot_agent(
+    config: ExperimentConfig,
+    env: GridWorld,
+) -> DQNRobotAgent:
+    """
+    Create a DQN robot agent that can handle all property counts.
+
+    This agent is trained with all 5 property categories so it can
+    generalize across different numbers of active properties.
+
+    Args:
+        config: Experiment configuration
+        env: The GridWorld environment
+
+    Returns:
+        DQN robot agent with all categories active
+    """
+    # Use ALL property categories so the agent can handle any property count
+    all_categories = PROPERTY_CATEGORIES[:5]
+    # Calculate total timesteps for exploration schedule
+    total_timesteps = config.num_train_episodes * config.max_steps_per_episode
+    return DQNRobotAgent(
+        num_actions=env.NUM_ACTIONS,
+        learning_rate=config.learning_rate,
+        discount_factor=config.discount_factor,
+        epsilon_start=config.epsilon_start,
+        epsilon_end=config.epsilon_end,
+        exploration_fraction=config.exploration_fraction,
+        total_timesteps=total_timesteps,
+        buffer_size=config.buffer_size,
+        batch_size=config.batch_size,
+        target_update_freq=config.target_update_freq,
+        train_freq=config.train_freq,
+        gradient_steps=config.gradient_steps,
+        learning_starts=config.learning_starts,
+        hidden_dims=config.hidden_dims,
+        grid_size=config.grid_size,
+        active_categories=all_categories,
+        seed=config.seed
+    )
+
+
+def run_variable_training(
+    config: ExperimentConfig,
+    robot: DQNRobotAgent,
+    property_counts: List[int],
+    verbose: bool = False
+) -> List[float]:
+    """
+    Run training where property count varies each episode.
+
+    Each training episode randomly samples a property count from
+    the provided list, creating a curriculum that exposes the agent
+    to all difficulty levels.
+
+    Args:
+        config: Experiment configuration
+        robot: The DQN robot agent (must be initialized with all categories)
+        property_counts: List of property counts to sample from (e.g., [1,2,3,4,5])
+        verbose: Whether to print progress
+
+    Returns:
+        List of episode rewards
+    """
+    rewards = []
+    rng = np.random.RandomState(config.seed)
+
+    for episode in tqdm(range(config.num_train_episodes)):
+        # Randomly sample number of distinct properties for this episode
+        num_props = rng.choice(property_counts)
+
+        # Create environment with sampled property count
+        env = GridWorld(
+            grid_size=config.grid_size,
+            num_objects=config.num_objects,
+            reward_ratio=config.reward_ratio,
+            num_rewarding_properties=config.num_rewarding_properties,
+            num_distinct_properties=num_props,
+            seed=config.seed + episode  # Vary seed per episode
+        )
+
+        human = HumanAgent()
+
+        # Run episode
+        result = run_episode(env, human, robot, training=True)
+        rewards.append(result.robot_reward)
+
+        # Decay exploration rate
+        robot.decay_epsilon()
+
+        if verbose and (episode + 1) % 100 == 0:
+            recent_avg = np.mean(rewards[-100:])
+            avg_loss = robot.get_average_loss(100)
+            print(f"Episode {episode + 1}/{config.num_train_episodes}, "
+                  f"Recent avg reward: {recent_avg:.2f}, "
+                  f"Epsilon: {robot.epsilon:.3f}, "
+                  f"Loss: {avg_loss:.4f}")
+
+    return rewards
+
+
+def run_evaluation_per_property_count(
+    config: ExperimentConfig,
+    robot: DQNRobotAgent,
+    num_distinct_properties: int,
+    num_episodes: int
+) -> List[EpisodeResult]:
+    """
+    Run evaluation for a specific property count.
+
+    Args:
+        config: Experiment configuration
+        robot: The trained DQN robot agent
+        num_distinct_properties: Number of property categories to use
+        num_episodes: Number of evaluation episodes
+
+    Returns:
+        List of episode results
+    """
+    results = []
+
+    # Store original epsilon and set to 0 for evaluation
+    original_epsilon = robot.epsilon
+    robot.epsilon = 0.0
+
+    for ep in range(num_episodes):
+        # Create environment with specific property count
+        env = GridWorld(
+            grid_size=config.grid_size,
+            num_objects=config.num_objects,
+            reward_ratio=config.reward_ratio,
+            num_rewarding_properties=config.num_rewarding_properties,
+            num_distinct_properties=num_distinct_properties,
+            seed=config.seed + 10000 + ep  # Different seeds for eval
+        )
+
+        human = HumanAgent()
+        result = run_episode(env, human, robot, training=False)
+        results.append(result)
+
+    # Restore epsilon
+    robot.epsilon = original_epsilon
+
+    return results
+
+
+@dataclass
+class VariableExperimentResult:
+    """Result of a variable property training experiment."""
+
+    train_rewards: List[float] = field(default_factory=list)
+    eval_results_per_property: Dict[int, List[float]] = field(default_factory=dict)
+    eval_means_per_property: Dict[int, float] = field(default_factory=dict)
+    eval_stds_per_property: Dict[int, float] = field(default_factory=dict)
+    train_mean: float = 0.0
+
+
+def run_variable_property_experiment(
+    config: ExperimentConfig,
+    property_counts: List[int] = None,
+    num_seeds: int = 5,
+    verbose: bool = True
+) -> Tuple[Dict[int, List[VariableExperimentResult]], DQNRobotAgent]:
+    """
+    Run experiment with variable property training and per-property evaluation.
+
+    Training: Agent is trained with randomly varying property counts each episode.
+    Evaluation: Agent is evaluated separately on each specific property count.
+
+    This tests whether an agent trained on variable complexity can generalize
+    well to different difficulty levels.
+
+    Args:
+        config: Base experiment configuration
+        property_counts: List of property counts to use (default: [1,2,3,4,5])
+        num_seeds: Number of random seeds to average over
+        verbose: Whether to print progress
+
+    Returns:
+        Tuple of (results dictionary by seed, last trained robot)
+        - results: Dictionary mapping seed_idx to VariableExperimentResult
+        - robot: The last trained robot agent (for visualization)
+    """
+    if property_counts is None:
+        property_counts = [1, 2, 3, 4, 5]
+
+    all_results: List[VariableExperimentResult] = []
+    trained_robot = None
+
+    base_seed = config.seed if config.seed is not None else 42
+
+    for seed_idx in tqdm(range(num_seeds)):
+        seed = base_seed + seed_idx
+
+        if verbose:
+            print(f"\n{'#'*60}")
+            print(f"Seed {seed_idx + 1}/{num_seeds} (seed={seed})")
+            print(f"{'#'*60}")
+
+        # Update config with current seed
+        current_config = ExperimentConfig(
+            grid_size=config.grid_size,
+            num_objects=config.num_objects,
+            reward_ratio=config.reward_ratio,
+            num_rewarding_properties=config.num_rewarding_properties,
+            num_train_episodes=config.num_train_episodes,
+            num_eval_episodes=config.num_eval_episodes,
+            max_steps_per_episode=config.max_steps_per_episode,
+            learning_rate=config.learning_rate,
+            discount_factor=config.discount_factor,
+            epsilon_start=config.epsilon_start,
+            epsilon_end=config.epsilon_end,
+            exploration_fraction=config.exploration_fraction,
+            buffer_size=config.buffer_size,
+            batch_size=config.batch_size,
+            target_update_freq=config.target_update_freq,
+            train_freq=config.train_freq,
+            gradient_steps=config.gradient_steps,
+            learning_starts=config.learning_starts,
+            hidden_dims=config.hidden_dims,
+            seed=seed
+        )
+
+        # Create environment (just for robot initialization)
+        env = GridWorld(
+            grid_size=current_config.grid_size,
+            num_objects=current_config.num_objects,
+            reward_ratio=current_config.reward_ratio,
+            num_rewarding_properties=current_config.num_rewarding_properties,
+            num_distinct_properties=5,  # Max for initialization
+            seed=seed
+        )
+
+        # Create robot with ALL property categories
+        robot = create_variable_robot_agent(current_config, env)
+
+        if verbose:
+            print("\nTraining with variable property counts...")
+
+        # Train with variable property counts
+        train_rewards = run_variable_training(
+            current_config,
+            robot,
+            property_counts,
+            verbose=verbose
+        )
+
+        # Evaluate on each property count separately
+        result = VariableExperimentResult(
+            train_rewards=train_rewards,
+            train_mean=np.mean(train_rewards[-100:])
+        )
+
+        if verbose:
+            print("\nEvaluating on each property count...")
+
+        for num_props in property_counts:
+            eval_results = run_evaluation_per_property_count(
+                current_config,
+                robot,
+                num_props,
+                current_config.num_eval_episodes
+            )
+
+            eval_rewards = [r.robot_reward for r in eval_results]
+            result.eval_results_per_property[num_props] = eval_rewards
+            result.eval_means_per_property[num_props] = np.mean(eval_rewards)
+            result.eval_stds_per_property[num_props] = np.std(eval_rewards)
+
+            if verbose:
+                print(f"  {num_props} properties: "
+                      f"mean={result.eval_means_per_property[num_props]:.2f}, "
+                      f"std={result.eval_stds_per_property[num_props]:.2f}")
+
+        all_results.append(result)
+        trained_robot = robot
+
+    return all_results, trained_robot
+
+
+def summarize_variable_results(
+    results: List[VariableExperimentResult],
+    property_counts: List[int]
+) -> Dict[int, Dict[str, float]]:
+    """
+    Summarize variable property experiment results.
+
+    Args:
+        results: List of VariableExperimentResult from each seed
+        property_counts: List of property counts that were tested
+
+    Returns:
+        Summary statistics for each property count
+    """
+    summary = {}
+
+    for num_props in property_counts:
+        # Gather eval means across all seeds
+        eval_means = [r.eval_means_per_property[num_props] for r in results]
+
+        summary[num_props] = {
+            'eval_mean': np.mean(eval_means),
+            'eval_std': np.std(eval_means),
+            'eval_sem': np.std(eval_means) / np.sqrt(len(eval_means)),
+        }
+
+    # Also compute overall training mean
+    train_means = [r.train_mean for r in results]
+    summary['training'] = {
+        'train_mean': np.mean(train_means),
+        'train_std': np.std(train_means),
+    }
 
     return summary

@@ -21,8 +21,11 @@ import numpy as np
 from gridworld.experiment import (
     ExperimentConfig,
     run_property_variation_experiment,
+    run_variable_property_experiment,
     summarize_results,
-    render_episode_gif
+    summarize_variable_results,
+    render_episode_gif,
+    VariableExperimentResult
 )
 
 
@@ -114,6 +117,12 @@ def parse_args():
     parser.add_argument(
         "--seed", type=int, default=42,
         help="Base random seed (default: 42)"
+    )
+
+    # Variable training mode
+    parser.add_argument(
+        "--variable-training", action="store_true",
+        help="Train with variable property counts (1-5) each episode, then evaluate on each count separately"
     )
 
     return parser.parse_args()
@@ -265,6 +274,120 @@ def plot_training_curves(
     plt.close()
 
 
+def plot_variable_training_results(
+    summary: dict,
+    output_dir: str,
+    config: ExperimentConfig
+):
+    """
+    Plot results from variable property training experiment.
+
+    Creates a bar chart showing evaluation performance at each property count
+    for an agent trained with variable properties.
+    """
+    # Filter out the 'training' key to get only property counts
+    prop_counts = sorted([k for k in summary.keys() if isinstance(k, int)])
+    eval_means = [summary[p]['eval_mean'] for p in prop_counts]
+    eval_sems = [summary[p]['eval_sem'] for p in prop_counts]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    bars = ax.bar(
+        prop_counts, eval_means,
+        yerr=eval_sems,
+        capsize=5,
+        color='tab:blue',
+        edgecolor='black',
+        alpha=0.8
+    )
+
+    ax.set_xlabel('Number of Distinct Properties (Test Condition)', fontsize=12)
+    ax.set_ylabel('Evaluation Return (Mean +/- SEM)', fontsize=12)
+    ax.set_title(
+        f'Variable Training: Performance vs. Test Property Count\n'
+        f'(Trained with all property counts, K={config.num_rewarding_properties}, '
+        f'Objects={config.num_objects})',
+        fontsize=14
+    )
+    ax.set_xticks(prop_counts)
+    ax.grid(True, alpha=0.3, axis='y')
+
+    # Add value labels on bars
+    for bar, mean in zip(bars, eval_means):
+        height = bar.get_height()
+        ax.annotate(f'{mean:.2f}',
+                    xy=(bar.get_x() + bar.get_width() / 2, height),
+                    xytext=(0, 3),
+                    textcoords="offset points",
+                    ha='center', va='bottom', fontsize=10)
+
+    plt.tight_layout()
+    plot_path = os.path.join(output_dir, 'variable_training_eval.png')
+    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    print(f"\nVariable training evaluation plot saved to: {plot_path}")
+    plt.close()
+
+
+def plot_variable_training_curve(
+    results: list,
+    output_dir: str
+):
+    """
+    Plot the training curve for variable property training.
+
+    Since all seeds train with the same variable setup, we average
+    the training curves across seeds.
+    """
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    # Average training curves across seeds
+    all_curves = [r.train_rewards for r in results]
+    min_len = min(len(c) for c in all_curves)
+    truncated = [c[:min_len] for c in all_curves]
+    mean_curve = np.mean(truncated, axis=0)
+    std_curve = np.std(truncated, axis=0)
+
+    # Smooth with rolling average
+    window = 50
+    if len(mean_curve) >= window:
+        smoothed_mean = np.convolve(
+            mean_curve,
+            np.ones(window) / window,
+            mode='valid'
+        )
+        smoothed_std = np.convolve(
+            std_curve,
+            np.ones(window) / window,
+            mode='valid'
+        )
+        x = np.arange(window - 1, len(mean_curve))
+
+        ax.plot(x, smoothed_mean, color='tab:blue', linewidth=2,
+                label='Mean (across seeds)')
+        ax.fill_between(
+            x,
+            smoothed_mean - smoothed_std,
+            smoothed_mean + smoothed_std,
+            alpha=0.3,
+            color='tab:blue',
+            label='±1 Std Dev'
+        )
+
+    ax.set_xlabel('Training Episode', fontsize=12)
+    ax.set_ylabel('Episode Return (Smoothed)', fontsize=12)
+    ax.set_title('Training Curve (Variable Property Training)', fontsize=14)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+
+    plot_path = os.path.join(output_dir, 'variable_training_curve.png')
+    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    print(f"Variable training curve saved to: {plot_path}")
+
+    plt.close()
+
+
 def main():
     """Main entry point."""
     args = parse_args()
@@ -293,7 +416,10 @@ def main():
     )
 
     print("=" * 60)
-    print("Gridworld Multi-Agent Experiment (DQN)")
+    if args.variable_training:
+        print("Gridworld Variable Property Training Experiment (DQN)")
+    else:
+        print("Gridworld Multi-Agent Experiment (DQN)")
     print("=" * 60)
     print(f"\nConfiguration:")
     print(f"  Grid size: {config.grid_size}x{config.grid_size}")
@@ -311,7 +437,30 @@ def main():
     print(f"  Property counts to test: {property_counts}")
     print(f"  Number of seeds: {args.num_seeds}")
     print(f"  Base seed: {args.seed}")
+    if args.variable_training:
+        print(f"  Training mode: VARIABLE (train with all property counts)")
+    else:
+        print(f"  Training mode: FIXED (train separately for each count)")
 
+    # Save results
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    if args.variable_training:
+        # Run variable property training experiment
+        run_variable_training_experiment(
+            args, config, property_counts
+        )
+    else:
+        # Run standard experiment
+        run_standard_experiment(
+            args, config, property_counts
+        )
+
+    print("\nExperiment complete!")
+
+
+def run_standard_experiment(args, config, property_counts):
+    """Run the standard experiment with fixed training per property count."""
     # Run experiment
     print("\n" + "=" * 60)
     print("Running experiments...")
@@ -353,9 +502,6 @@ def main():
     else:
         print("HYPOTHESIS NOT SUPPORTED: No negative correlation observed.")
 
-    # Save results
-    os.makedirs(args.output_dir, exist_ok=True)
-
     # Save summary as JSON
     summary_path = os.path.join(args.output_dir, 'summary.json')
     config_dict = {
@@ -392,7 +538,133 @@ def main():
         except Exception as e:
             print(f"Warning: Could not create plots: {e}")
 
-    print("\nExperiment complete!")
+
+def run_variable_training_experiment(args, config, property_counts):
+    """Run the variable property training experiment."""
+    print("\n" + "=" * 60)
+    print("Running variable property training experiment...")
+    print("=" * 60)
+    print("Training: Agent sees all property counts (1-5) during training")
+    print("Evaluation: Agent tested separately on each property count")
+
+    results, trained_robot = run_variable_property_experiment(
+        config=config,
+        property_counts=property_counts,
+        num_seeds=args.num_seeds,
+        verbose=args.verbose
+    )
+
+    # Summarize results
+    summary = summarize_variable_results(results, property_counts)
+
+    # Print summary
+    print("\n" + "=" * 60)
+    print("RESULTS SUMMARY (Variable Training)")
+    print("=" * 60)
+    print("\nEvaluation Results by Property Count:")
+    print(f"\n{'Props':<8} {'Eval Mean':<12} {'Eval Std':<12} {'Eval SEM':<12}")
+    print("-" * 48)
+
+    prop_counts_only = sorted([k for k in summary.keys() if isinstance(k, int)])
+    for num_props in prop_counts_only:
+        s = summary[num_props]
+        print(f"{num_props:<8} {s['eval_mean']:<12.2f} {s['eval_std']:<12.2f} {s['eval_sem']:<12.2f}")
+
+    if 'training' in summary:
+        print(f"\nOverall training mean (last 100 eps): {summary['training']['train_mean']:.2f}")
+
+    # Calculate and report trend
+    prop_counts_arr = np.array(prop_counts_only)
+    eval_means_arr = np.array([summary[p]['eval_mean'] for p in prop_counts_only])
+
+    correlation = np.corrcoef(prop_counts_arr, eval_means_arr)[0, 1]
+    print(f"\nCorrelation between property count and eval return: {correlation:.3f}")
+
+    if correlation < -0.5:
+        print("RESULT: Strong negative correlation observed!")
+        print("  Performance decreases as property count increases at test time.")
+    elif correlation < 0:
+        print("RESULT: Slight negative correlation observed.")
+    else:
+        print("RESULT: No negative correlation observed.")
+        print("  Agent generalizes well across property counts.")
+
+    # Save summary as JSON
+    summary_path = os.path.join(args.output_dir, 'variable_training_summary.json')
+    config_dict = {
+        'grid_size': config.grid_size,
+        'num_objects': config.num_objects,
+        'reward_ratio': config.reward_ratio,
+        'num_rewarding_properties': config.num_rewarding_properties,
+        'num_train_episodes': config.num_train_episodes,
+        'num_eval_episodes': config.num_eval_episodes,
+        'learning_rate': config.learning_rate,
+        'buffer_size': config.buffer_size,
+        'batch_size': config.batch_size,
+        'target_update_freq': config.target_update_freq,
+        'learning_starts': config.learning_starts,
+        'hidden_dims': config.hidden_dims,
+        'num_seeds': args.num_seeds,
+        'base_seed': args.seed,
+        'training_mode': 'variable'
+    }
+
+    # Convert summary keys to strings for JSON serialization
+    summary_json = {str(k): v for k, v in summary.items()}
+
+    with open(summary_path, 'w') as f:
+        json.dump({
+            'config': config_dict,
+            'summary': summary_json,
+            'correlation': correlation,
+            'timestamp': datetime.now().isoformat()
+        }, f, indent=2)
+    print(f"\nSummary saved to: {summary_path}")
+
+    # Plot results
+    if not args.no_plot:
+        try:
+            plot_variable_training_results(summary, args.output_dir, config)
+            plot_variable_training_curve(results, args.output_dir)
+            # Render GIFs for each property count using the trained robot
+            render_variable_episode_gifs(
+                property_counts, args.output_dir, config, trained_robot
+            )
+        except Exception as e:
+            print(f"Warning: Could not create plots: {e}")
+
+
+def render_variable_episode_gifs(
+    property_counts: list,
+    output_dir: str,
+    config: ExperimentConfig,
+    trained_robot
+):
+    """
+    Render and save episode GIFs for each property count using a single trained robot.
+
+    Args:
+        property_counts: List of distinct property counts
+        output_dir: Directory to save GIFs
+        config: Experiment configuration
+        trained_robot: The robot agent trained with variable properties
+    """
+    print("\nRendering episode GIFs (variable training)...")
+
+    for num_props in property_counts:
+        output_path = os.path.join(
+            output_dir,
+            f'variable_training_{num_props}_props.gif'
+        )
+        render_episode_gif(
+            num_distinct_properties=num_props,
+            config=config,
+            output_path=output_path,
+            max_steps=50,
+            fps=4,
+            trained_robot=trained_robot
+        )
+        print(f"  Saved GIF for {num_props} distinct properties: {output_path}")
 
 
 if __name__ == "__main__":
