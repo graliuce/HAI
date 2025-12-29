@@ -42,8 +42,8 @@ def parse_args():
         help="Number of objects in the grid (default: 20)"
     )
     parser.add_argument(
-        "--reward-ratio", type=float, default=0.4,
-        help="Proportion of objects that are rewarding (default: 0.4)"
+        "--reward-ratio", type=float, default=0.5,
+        help="Proportion of objects that are rewarding (default: 0.5)"
     )
     parser.add_argument(
         "--num-rewarding-properties", type=int, default=2,
@@ -191,7 +191,8 @@ def plot_results(
 def render_episode_gifs(
     property_counts: list,
     output_dir: str,
-    config: ExperimentConfig
+    config: ExperimentConfig,
+    trained_robots: dict
 ):
     """
     Render and save episode GIFs for each property count.
@@ -200,6 +201,7 @@ def render_episode_gifs(
         property_counts: List of distinct property counts
         output_dir: Directory to save GIFs
         config: Experiment configuration
+        trained_robots: Dictionary mapping property count to trained robot agent
     """
     print("\nRendering episode GIFs...")
 
@@ -213,7 +215,8 @@ def render_episode_gifs(
             config=config,
             output_path=output_path,
             max_steps=50,
-            fps=4
+            fps=4,
+            trained_robot=trained_robots.get(num_props)
         )
         print(f"  Saved GIF for {num_props} distinct properties: {output_path}")
 
@@ -314,7 +317,7 @@ def main():
     print("Running experiments...")
     print("=" * 60)
 
-    results = run_property_variation_experiment(
+    results, trained_robots = run_property_variation_experiment(
         config=config,
         property_counts=property_counts,
         num_seeds=args.num_seeds,
@@ -385,7 +388,7 @@ def main():
         try:
             plot_results(summary, args.output_dir, config)
             plot_training_curves(results, args.output_dir)
-            render_episode_gifs(property_counts, args.output_dir, config)
+            render_episode_gifs(property_counts, args.output_dir, config, trained_robots)
         except Exception as e:
             print(f"Warning: Could not create plots: {e}")
 
