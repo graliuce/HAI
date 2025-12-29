@@ -669,3 +669,4 @@ def render_variable_episode_gifs(
 
 if __name__ == "__main__":
     main()
+# Variable property training experiment
