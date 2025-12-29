@@ -537,13 +537,13 @@ class GridWorld:
             elif props['shape'] == 'diamond':
                 patch = RegularPolygon(
                     (center_x, center_y), numVertices=4, radius=size * 1.2,
-                    orientation=np.pi / 4,
                     facecolor=color, edgecolor=edgecolor,
                     linewidth=linewidth, alpha=opacity, hatch=pattern
                 )
             else:  # pentagon
                 patch = RegularPolygon(
                     (center_x, center_y), numVertices=5, radius=size * 1.2,
+                    orientation=np.pi / 10,  # Rotate so one vertex points up
                     facecolor=color, edgecolor=edgecolor,
                     linewidth=linewidth, alpha=opacity, hatch=pattern
                 )
@@ -696,13 +696,13 @@ class GridWorld:
             elif props['shape'] == 'diamond':
                 patch = RegularPolygon(
                     (center_x, center_y), numVertices=4, radius=size * 1.2,
-                    orientation=np.pi / 4,
                     facecolor=color, edgecolor=edgecolor,
                     linewidth=linewidth, alpha=opacity, hatch=pattern
                 )
             else:  # pentagon
                 patch = RegularPolygon(
                     (center_x, center_y), numVertices=5, radius=size * 1.2,
+                    orientation=np.pi / 10,  # Rotate so one vertex points up
                     facecolor=color, edgecolor=edgecolor,
                     linewidth=linewidth, alpha=opacity, hatch=pattern
                 )
