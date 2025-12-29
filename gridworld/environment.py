@@ -296,7 +296,7 @@ class GridWorld:
                 if obj.has_any_property(self.reward_properties):
                     robot_reward += 1.0
                 else:
-                    robot_reward -= 0.0
+                    robot_reward -= 1.0
 
         # Remove collected objects
         for obj_id in objects_to_remove:

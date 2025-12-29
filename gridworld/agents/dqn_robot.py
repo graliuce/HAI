@@ -101,19 +101,27 @@ class DQNRobotAgent:
 
     Uses function approximation to handle large state spaces that
     make tabular Q-learning infeasible.
+
+    This implementation follows the stable-baselines3 DQN approach:
+    - Linear exploration schedule based on total timesteps
+    - Target network updates at fixed intervals
+    - Training starts after collecting initial experiences
     """
 
     def __init__(
         self,
         num_actions: int = 5,
-        learning_rate: float = 2.5e-4,
+        learning_rate: float = 1e-4,
         discount_factor: float = 0.99,
         epsilon_start: float = 1.0,
         epsilon_end: float = 0.05,
-        epsilon_decay: float = 0.995,
+        exploration_fraction: float = 0.1,
+        total_timesteps: int = 100000,
         buffer_size: int = 100000,
-        batch_size: int = 128,
-        target_update_freq: int = 100,
+        batch_size: int = 32,
+        target_update_freq: int = 10000,
+        train_freq: int = 4,
+        gradient_steps: int = 1,
         learning_starts: int = 1000,
         hidden_dims: List[int] = None,
         grid_size: int = 10,
@@ -130,10 +138,13 @@ class DQNRobotAgent:
             discount_factor: Discount factor (gamma)
             epsilon_start: Initial exploration rate
             epsilon_end: Minimum exploration rate
-            epsilon_decay: Decay rate for epsilon per episode
+            exploration_fraction: Fraction of total_timesteps over which to decay epsilon
+            total_timesteps: Total number of timesteps for training (for exploration schedule)
             buffer_size: Size of the replay buffer
             batch_size: Batch size for training
             target_update_freq: How often to update target network (in steps)
+            train_freq: How often to train (in steps)
+            gradient_steps: How many gradient updates per train call
             learning_starts: Number of steps before training starts
             hidden_dims: Hidden layer dimensions for Q-network
             grid_size: Size of the grid (for normalization)
@@ -147,15 +158,20 @@ class DQNRobotAgent:
         self.num_actions = num_actions
         self.learning_rate = learning_rate
         self.discount_factor = discount_factor
-        self.epsilon = epsilon_start
         self.epsilon_start = epsilon_start
         self.epsilon_end = epsilon_end
-        self.epsilon_decay = epsilon_decay
+        self.exploration_fraction = exploration_fraction
+        self.total_timesteps = total_timesteps
         self.batch_size = batch_size
         self.target_update_freq = target_update_freq
+        self.train_freq = train_freq
+        self.gradient_steps = gradient_steps
         self.learning_starts = learning_starts
         self.grid_size = grid_size
-        self.hidden_dims = hidden_dims or [128, 128]
+        self.hidden_dims = hidden_dims or [64, 64]
+
+        # Current exploration rate (will be updated based on linear schedule)
+        self.epsilon = epsilon_start
 
         # Set active categories
         self.active_categories = active_categories or PROPERTY_CATEGORIES[:2]
@@ -206,6 +222,23 @@ class DQNRobotAgent:
         self.steps = 0
         self.total_steps = 0  # Across all episodes
         self.train_losses = []
+        self._n_updates = 0  # Number of gradient updates
+
+    def _get_exploration_rate(self) -> float:
+        """
+        Compute exploration rate using linear schedule (stable-baselines3 style).
+
+        The exploration rate decreases linearly from epsilon_start to epsilon_end
+        over the first exploration_fraction of total_timesteps.
+        """
+        # Calculate progress through training (0 to 1)
+        progress = self.total_steps / self.total_timesteps
+
+        # Calculate progress through exploration phase
+        exploration_progress = min(1.0, progress / self.exploration_fraction)
+
+        # Linear interpolation from epsilon_start to epsilon_end
+        return self.epsilon_start + exploration_progress * (self.epsilon_end - self.epsilon_start)
 
     def _build_property_indices(self):
         """Build indices for one-hot encoding property values."""
@@ -373,6 +406,7 @@ class DQNRobotAgent:
         self.replay_buffer = ReplayBuffer(self.replay_buffer.buffer.maxlen)
         self.epsilon = self.epsilon_start
         self.total_steps = 0
+        self._n_updates = 0
         self.train_losses = []
         self.reset()
 
@@ -437,7 +471,7 @@ class DQNRobotAgent:
         next_observation: dict
     ):
         """
-        Update Q-network using experience replay.
+        Update Q-network using experience replay (stable-baselines3 style).
 
         Args:
             action: Action taken
@@ -449,6 +483,9 @@ class DQNRobotAgent:
         self.total_reward += reward
         self.steps += 1
         self.total_steps += 1
+
+        # Update exploration rate using linear schedule
+        self.epsilon = self._get_exploration_rate()
 
         # Encode observations
         state_features = self._encode_observation(observation)
@@ -463,10 +500,13 @@ class DQNRobotAgent:
         if len(self.replay_buffer) < self.learning_starts:
             return
 
-        # Sample batch and train
-        self._train_step()
+        # Only train at specified frequency
+        if self.total_steps % self.train_freq == 0:
+            # Perform gradient_steps updates
+            for _ in range(self.gradient_steps):
+                self._train_step()
 
-        # Update target network
+        # Update target network at specified frequency
         if self.total_steps % self.target_update_freq == 0:
             self.target_network.load_state_dict(self.q_network.state_dict())
 
@@ -502,14 +542,18 @@ class DQNRobotAgent:
         torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
         self.optimizer.step()
 
+        self._n_updates += 1
         self.train_losses.append(loss.item())
 
     def decay_epsilon(self):
-        """Decay epsilon after each episode."""
-        self.epsilon = max(
-            self.epsilon_end,
-            self.epsilon * self.epsilon_decay
-        )
+        """
+        Deprecated: Epsilon decay is now handled automatically in update()
+        using a linear schedule based on total_timesteps.
+
+        This method is kept for backward compatibility but does nothing.
+        """
+        # No-op: epsilon is now updated in update() via linear schedule
+        pass
 
     def get_inferred_properties(self) -> List[Tuple[str, float]]:
         """Get the inferred reward properties sorted by confidence."""

@@ -26,19 +26,21 @@ class ExperimentConfig:
     num_eval_episodes: int = 10
     max_steps_per_episode: int = 100
 
-    # DQN learning parameters
+    # DQN learning parameters (stable-baselines3 style)
     learning_rate: float = 1e-4
     discount_factor: float = 0.99
     epsilon_start: float = 1.0
     epsilon_end: float = 0.05
-    epsilon_decay: float = 0.995
+    exploration_fraction: float = 0.1  # Fraction of total timesteps for epsilon decay
 
     # DQN-specific parameters
     buffer_size: int = 100000
-    batch_size: int = 64
-    target_update_freq: int = 100
-    learning_starts: int = 500
-    hidden_dims: List[int] = field(default_factory=lambda: [128, 128])
+    batch_size: int = 32
+    target_update_freq: int = 10000
+    train_freq: int = 4
+    gradient_steps: int = 1
+    learning_starts: int = 1000
+    hidden_dims: List[int] = field(default_factory=lambda: [64, 64])
 
     # Random seed
     seed: Optional[int] = None
@@ -228,16 +230,21 @@ def create_robot_agent(
         DQN robot agent
     """
     active_categories = PROPERTY_CATEGORIES[:num_distinct_properties]
+    # Calculate total timesteps for exploration schedule
+    total_timesteps = config.num_train_episodes * config.max_steps_per_episode
     return DQNRobotAgent(
         num_actions=env.NUM_ACTIONS,
         learning_rate=config.learning_rate,
         discount_factor=config.discount_factor,
         epsilon_start=config.epsilon_start,
         epsilon_end=config.epsilon_end,
-        epsilon_decay=config.epsilon_decay,
+        exploration_fraction=config.exploration_fraction,
+        total_timesteps=total_timesteps,
         buffer_size=config.buffer_size,
         batch_size=config.batch_size,
         target_update_freq=config.target_update_freq,
+        train_freq=config.train_freq,
+        gradient_steps=config.gradient_steps,
         learning_starts=config.learning_starts,
         hidden_dims=config.hidden_dims,
         grid_size=config.grid_size,
@@ -250,7 +257,7 @@ def run_experiment(
     num_distinct_properties: int,
     config: ExperimentConfig,
     verbose: bool = False
-) -> ExperimentResult:
+) -> tuple[ExperimentResult, DQNRobotAgent]:
     """
     Run a complete experiment with specified number of distinct properties.
 
@@ -260,7 +267,7 @@ def run_experiment(
         verbose: Whether to print progress
 
     Returns:
-        Experiment result with training and evaluation statistics
+        Tuple of (experiment result, trained robot agent)
     """
     if verbose:
         print(f"\n{'='*60}")
@@ -315,7 +322,7 @@ def run_experiment(
         print(f"  Training mean (last 100): {result.train_mean:.2f}")
         print(f"  Evaluation mean: {result.eval_mean:.2f} +/- {result.eval_std:.2f}")
 
-    return result
+    return result, robot
 
 
 def run_property_variation_experiment(
@@ -323,7 +330,7 @@ def run_property_variation_experiment(
     property_counts: List[int] = None,
     num_seeds: int = 5,
     verbose: bool = True
-) -> Dict[int, List[ExperimentResult]]:
+) -> tuple[Dict[int, List[ExperimentResult]], Dict[int, DQNRobotAgent]]:
     """
     Run experiments varying the number of distinct properties.
 
@@ -337,7 +344,9 @@ def run_property_variation_experiment(
         verbose: Whether to print progress
 
     Returns:
-        Dictionary mapping property count to list of results (one per seed)
+        Tuple of (results dictionary, trained robots dictionary)
+        - results: Dictionary mapping property count to list of results (one per seed)
+        - robots: Dictionary mapping property count to a trained robot agent
     """
     if property_counts is None:
         property_counts = [1, 2, 3, 4, 5]
@@ -345,6 +354,7 @@ def run_property_variation_experiment(
     all_results: Dict[int, List[ExperimentResult]] = {
         count: [] for count in property_counts
     }
+    trained_robots: Dict[int, DQNRobotAgent] = {}
 
     base_seed = config.seed if config.seed is not None else 42
 
@@ -370,24 +380,28 @@ def run_property_variation_experiment(
                 discount_factor=config.discount_factor,
                 epsilon_start=config.epsilon_start,
                 epsilon_end=config.epsilon_end,
-                epsilon_decay=config.epsilon_decay,
+                exploration_fraction=config.exploration_fraction,
                 buffer_size=config.buffer_size,
                 batch_size=config.batch_size,
                 target_update_freq=config.target_update_freq,
+                train_freq=config.train_freq,
+                gradient_steps=config.gradient_steps,
                 learning_starts=config.learning_starts,
                 hidden_dims=config.hidden_dims,
                 seed=seed
             )
 
-            result = run_experiment(
+            result, robot = run_experiment(
                 num_distinct_properties=num_props,
                 config=current_config,
                 verbose=verbose
             )
 
             all_results[num_props].append(result)
+            # Keep the last trained robot for each property count (for visualization)
+            trained_robots[num_props] = robot
 
-    return all_results
+    return all_results, trained_robots
 
 
 def render_episode_gif(
@@ -395,7 +409,8 @@ def render_episode_gif(
     config: ExperimentConfig,
     output_path: str,
     max_steps: int = 50,
-    fps: int = 4
+    fps: int = 4,
+    trained_robot: Optional[DQNRobotAgent] = None
 ) -> None:
     """
     Render and save a GIF of an entire episode for visualization.
@@ -406,11 +421,31 @@ def render_episode_gif(
         output_path: Path to save the GIF
         max_steps: Maximum number of steps to render
         fps: Frames per second for the GIF
+        trained_robot: Optional pre-trained robot agent. If None, will train a new one.
     """
     import imageio
 
-    # Create environment with a fixed seed for reproducibility
-    env = GridWorld(
+    # Seed numpy's RNG with a truly random value for different episodes each run
+    np.random.seed(None)
+    
+    # Create environment for training (if needed) with a random seed
+    train_env = GridWorld(
+        grid_size=config.grid_size,
+        num_objects=config.num_objects,
+        reward_ratio=config.reward_ratio,
+        num_rewarding_properties=config.num_rewarding_properties,
+        num_distinct_properties=num_distinct_properties,
+        seed=config.seed
+    )
+
+    # If no trained robot provided, train one
+    if trained_robot is None:
+        raise ValueError("Missing trained robot agent.")
+    else:
+        robot = trained_robot
+    
+    # Create a separate environment for visualization with a random seed
+    vis_env = GridWorld(
         grid_size=config.grid_size,
         num_objects=config.num_objects,
         reward_ratio=config.reward_ratio,
@@ -419,32 +454,16 @@ def render_episode_gif(
         seed=np.random.randint(0, 1000000)
     )
 
-    # Create a config with no exploration for visualization
-    vis_config = ExperimentConfig(
-        grid_size=config.grid_size,
-        num_objects=config.num_objects,
-        reward_ratio=config.reward_ratio,
-        num_rewarding_properties=config.num_rewarding_properties,
-        learning_rate=config.learning_rate,
-        discount_factor=config.discount_factor,
-        epsilon_start=0.0,  # No exploration for visualization
-        epsilon_end=0.0,
-        epsilon_decay=1.0,
-        buffer_size=config.buffer_size,
-        batch_size=config.batch_size,
-        target_update_freq=config.target_update_freq,
-        learning_starts=config.learning_starts,
-        hidden_dims=config.hidden_dims,
-        seed=np.random.randint(0, 1000000)
-    )
-
-    # Create agents
+    # Create human agent for visualization
     human = HumanAgent()
-    robot = create_robot_agent(vis_config, env, num_distinct_properties)
+
+    # Set robot to evaluation mode (no exploration)
+    original_epsilon = robot.epsilon
+    robot.epsilon = 0.0
 
     # Reset environment
-    observation = env.reset()
-    human_obs = env.get_human_observation()
+    observation = vis_env.reset()
+    human_obs = vis_env.get_human_observation()
     human.reset(human_obs['reward_properties'])
     robot.reset()
 
@@ -452,25 +471,28 @@ def render_episode_gif(
     frames = []
 
     # Capture initial frame
-    frames.append(env.render_to_array())
+    frames.append(vis_env.render_to_array())
 
     step = 0
 
-    while not env.done and step < max_steps:
+    while not vis_env.done and step < max_steps:
         # Get actions
         human_action = human.get_action(human_obs)
         robot_action = robot.get_action(observation, training=False)
 
         # Execute human action first
-        env.human_position = env._apply_action(env.human_position, human_action)
+        vis_env.human_position = vis_env._apply_action(vis_env.human_position, human_action)
 
         # Step environment with robot action
-        observation, _, _, _ = env.step(robot_action)
-        human_obs = env.get_human_observation()
+        observation, _, _, _ = vis_env.step(robot_action)
+        human_obs = vis_env.get_human_observation()
 
         # Capture frame
-        frames.append(env.render_to_array())
+        frames.append(vis_env.render_to_array())
         step += 1
+
+    # Restore epsilon if needed
+    robot.epsilon = original_epsilon
 
     # Save as GIF
     imageio.mimsave(output_path, frames, fps=fps, loop=0)
