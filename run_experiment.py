@@ -48,6 +48,10 @@ def parse_args():
         "--num-rewarding-properties", type=int, default=2,
         help="Number of properties that give reward (K) (default: 2)"
     )
+    parser.add_argument(
+        "--num-property-values", type=int, default=5,
+        help="Number of values per property category, 1-5 (default: 5)"
+    )
 
     # Training parameters
     parser.add_argument(
@@ -282,6 +286,7 @@ def main():
         num_objects=args.num_objects,
         reward_ratio=args.reward_ratio,
         num_rewarding_properties=args.num_rewarding_properties,
+        num_property_values=args.num_property_values,
         num_train_episodes=args.train_episodes,
         num_eval_episodes=args.eval_episodes,
         learning_rate=args.learning_rate,
@@ -305,6 +310,7 @@ def main():
     print(f"  Number of objects: {config.num_objects}")
     print(f"  Reward ratio: {config.reward_ratio}")
     print(f"  Rewarding properties (K): {config.num_rewarding_properties}")
+    print(f"  Property values per category: {config.num_property_values}")
     print(f"  Training episodes: {config.num_train_episodes}")
     print(f"  Evaluation episodes: {config.num_eval_episodes}")
     print(f"  Learning rate: {config.learning_rate}")
@@ -378,6 +384,7 @@ def main():
         'num_objects': config.num_objects,
         'reward_ratio': config.reward_ratio,
         'num_rewarding_properties': config.num_rewarding_properties,
+        'num_property_values': config.num_property_values,
         'num_train_episodes': config.num_train_episodes,
         'num_eval_episodes': config.num_eval_episodes,
         'learning_rate': config.learning_rate,

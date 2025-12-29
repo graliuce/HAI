@@ -11,6 +11,7 @@ from .objects import (
     GridObject,
     PROPERTY_CATEGORIES,
     PROPERTY_VALUES,
+    MAX_PROPERTY_VALUES,
     create_random_object,
     sample_reward_properties
 )
@@ -35,6 +36,7 @@ class GridWorld:
         reward_ratio: float = 0.3,
         num_rewarding_properties: int = 2,
         num_distinct_properties: int = 2,
+        num_property_values: int = MAX_PROPERTY_VALUES,
         seed: Optional[int] = None
     ):
         """
@@ -46,6 +48,7 @@ class GridWorld:
             reward_ratio: Proportion of objects that should be rewarding (approximate)
             num_rewarding_properties: K - number of properties that give reward
             num_distinct_properties: Number of property categories that vary (1-5)
+            num_property_values: Number of values per property category (1-5, default 5)
             seed: Random seed for reproducibility
         """
         self.grid_size = grid_size
@@ -53,6 +56,7 @@ class GridWorld:
         self.reward_ratio = reward_ratio
         self.num_rewarding_properties = num_rewarding_properties
         self.num_distinct_properties = min(num_distinct_properties, 5)
+        self.num_property_values = max(1, min(num_property_values, MAX_PROPERTY_VALUES))
 
         self.rng = random.Random(seed)
         self.np_rng = np.random.RandomState(seed)
@@ -88,7 +92,8 @@ class GridWorld:
         self.reward_properties = sample_reward_properties(
             self.num_rewarding_properties,
             self.active_categories,
-            self.rng
+            self.rng,
+            self.num_property_values
         )
 
         # Generate objects ensuring some are rewarding
@@ -117,7 +122,9 @@ class GridWorld:
 
         while rewarding_created < target_rewarding and attempts < max_attempts:
             position = self._get_random_empty_position(occupied_positions)
-            obj = create_random_object(0, position, self.active_categories, self.rng)  # Temp ID
+            obj = create_random_object(
+                0, position, self.active_categories, self.rng, self.num_property_values
+            )
 
             if obj.has_any_property(self.reward_properties):
                 temp_objects.append((position, obj))
@@ -132,7 +139,9 @@ class GridWorld:
 
         while non_rewarding_created < target_non_rewarding and attempts < max_attempts:
             position = self._get_random_empty_position(occupied_positions)
-            obj = create_random_object(0, position, self.active_categories, self.rng)  # Temp ID
+            obj = create_random_object(
+                0, position, self.active_categories, self.rng, self.num_property_values
+            )
 
             if not obj.has_any_property(self.reward_properties):
                 temp_objects.append((position, obj))
@@ -144,7 +153,9 @@ class GridWorld:
         # If we couldn't create enough non-rewarding, just fill with random
         while len(temp_objects) < self.num_objects:
             position = self._get_random_empty_position(occupied_positions)
-            obj = create_random_object(0, position, self.active_categories, self.rng)
+            obj = create_random_object(
+                0, position, self.active_categories, self.rng, self.num_property_values
+            )
             temp_objects.append((position, obj))
             occupied_positions.add(position)
 

@@ -24,6 +24,7 @@ class ExperimentConfig:
     num_objects: int = 20
     reward_ratio: float = 0.4
     num_rewarding_properties: int = 2  # K
+    num_property_values: int = 5  # Number of values per property category (1-5)
 
     # Training parameters
     num_train_episodes: int = 1000
@@ -248,6 +249,7 @@ def run_variable_training(
             reward_ratio=config.reward_ratio,
             num_rewarding_properties=config.num_rewarding_properties,
             num_distinct_properties=num_props,
+            num_property_values=config.num_property_values,
             seed=config.seed + episode  # Vary seed per episode
         )
 
@@ -303,6 +305,7 @@ def run_evaluation_per_property_count(
             reward_ratio=config.reward_ratio,
             num_rewarding_properties=config.num_rewarding_properties,
             num_distinct_properties=num_distinct_properties,
+            num_property_values=config.num_property_values,
             seed=config.seed + 10000 + ep  # Different seeds for eval
         )
 
@@ -364,6 +367,7 @@ def run_variable_property_experiment(
             num_objects=config.num_objects,
             reward_ratio=config.reward_ratio,
             num_rewarding_properties=config.num_rewarding_properties,
+            num_property_values=config.num_property_values,
             num_train_episodes=config.num_train_episodes,
             num_eval_episodes=config.num_eval_episodes,
             max_steps_per_episode=config.max_steps_per_episode,
@@ -391,6 +395,7 @@ def run_variable_property_experiment(
             reward_ratio=current_config.reward_ratio,
             num_rewarding_properties=current_config.num_rewarding_properties,
             num_distinct_properties=5,  # Max for initialization
+            num_property_values=current_config.num_property_values,
             seed=seed
         )
 
@@ -513,6 +518,7 @@ def render_episode_gif(
         reward_ratio=config.reward_ratio,
         num_rewarding_properties=config.num_rewarding_properties,
         num_distinct_properties=num_distinct_properties,
+        num_property_values=config.num_property_values,
         seed=np.random.randint(0, 1000000)
     )
 
