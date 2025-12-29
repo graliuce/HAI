@@ -444,27 +444,35 @@ class GridWorld:
         COLOR_MAP = {
             'red': '#E74C3C',
             'blue': '#3498DB',
-            'green': '#2ECC71'
+            'green': '#2ECC71',
+            'yellow': '#F1C40F',
+            'purple': '#9B59B6'
         }
 
         # Size mappings (relative to cell size)
         SIZE_MAP = {
+            'tiny': 0.10,
             'small': 0.15,
-            'medium': 0.25,
-            'large': 0.35
+            'medium': 0.22,
+            'large': 0.30,
+            'huge': 0.38
         }
 
         # Pattern mappings (hatch patterns)
         PATTERN_MAP = {
             'solid': '',
             'striped': '///',
-            'dotted': '...'
+            'dotted': '...',
+            'checkered': 'xx',
+            'gradient': '\\\\',
         }
 
         # Opacity mappings
         OPACITY_MAP = {
-            'transparent': 0.3,
+            'transparent': 0.2,
+            'faint': 0.4,
             'translucent': 0.6,
+            'semi-opaque': 0.8,
             'opaque': 1.0
         }
 
@@ -507,9 +515,22 @@ class GridWorld:
                     facecolor=color, edgecolor=edgecolor,
                     linewidth=linewidth, alpha=opacity, hatch=pattern
                 )
-            else:  # triangle
+            elif props['shape'] == 'triangle':
                 patch = RegularPolygon(
                     (center_x, center_y), numVertices=3, radius=size * 1.2,
+                    facecolor=color, edgecolor=edgecolor,
+                    linewidth=linewidth, alpha=opacity, hatch=pattern
+                )
+            elif props['shape'] == 'diamond':
+                patch = RegularPolygon(
+                    (center_x, center_y), numVertices=4, radius=size * 1.2,
+                    orientation=np.pi / 4,
+                    facecolor=color, edgecolor=edgecolor,
+                    linewidth=linewidth, alpha=opacity, hatch=pattern
+                )
+            else:  # pentagon
+                patch = RegularPolygon(
+                    (center_x, center_y), numVertices=5, radius=size * 1.2,
                     facecolor=color, edgecolor=edgecolor,
                     linewidth=linewidth, alpha=opacity, hatch=pattern
                 )
@@ -588,24 +609,32 @@ class GridWorld:
         COLOR_MAP = {
             'red': '#E74C3C',
             'blue': '#3498DB',
-            'green': '#2ECC71'
+            'green': '#2ECC71',
+            'yellow': '#F1C40F',
+            'purple': '#9B59B6'
         }
 
         SIZE_MAP = {
+            'tiny': 0.10,
             'small': 0.15,
-            'medium': 0.25,
-            'large': 0.35
+            'medium': 0.22,
+            'large': 0.30,
+            'huge': 0.38
         }
 
         PATTERN_MAP = {
             'solid': '',
             'striped': '///',
-            'dotted': '...'
+            'dotted': '...',
+            'checkered': 'xx',
+            'gradient': '\\\\',
         }
 
         OPACITY_MAP = {
-            'transparent': 0.3,
+            'transparent': 0.2,
+            'faint': 0.4,
             'translucent': 0.6,
+            'semi-opaque': 0.8,
             'opaque': 1.0
         }
 
@@ -622,7 +651,7 @@ class GridWorld:
             props = obj.get_properties()
 
             color = COLOR_MAP.get(props['color'], '#888888')
-            size = SIZE_MAP.get(props['size'], 0.25)
+            size = SIZE_MAP.get(props['size'], 0.22)
             pattern = PATTERN_MAP.get(props['pattern'], '')
             opacity = OPACITY_MAP.get(props['opacity'], 1.0)
 
@@ -645,9 +674,22 @@ class GridWorld:
                     facecolor=color, edgecolor=edgecolor,
                     linewidth=linewidth, alpha=opacity, hatch=pattern
                 )
-            else:
+            elif props['shape'] == 'triangle':
                 patch = RegularPolygon(
                     (center_x, center_y), numVertices=3, radius=size * 1.2,
+                    facecolor=color, edgecolor=edgecolor,
+                    linewidth=linewidth, alpha=opacity, hatch=pattern
+                )
+            elif props['shape'] == 'diamond':
+                patch = RegularPolygon(
+                    (center_x, center_y), numVertices=4, radius=size * 1.2,
+                    orientation=np.pi / 4,
+                    facecolor=color, edgecolor=edgecolor,
+                    linewidth=linewidth, alpha=opacity, hatch=pattern
+                )
+            else:  # pentagon
+                patch = RegularPolygon(
+                    (center_x, center_y), numVertices=5, radius=size * 1.2,
                     facecolor=color, edgecolor=edgecolor,
                     linewidth=linewidth, alpha=opacity, hatch=pattern
                 )

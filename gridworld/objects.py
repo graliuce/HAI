@@ -8,11 +8,11 @@ import random
 PROPERTY_CATEGORIES = ['color', 'shape', 'size', 'pattern', 'opacity']
 
 PROPERTY_VALUES = {
-    'color': ['red', 'blue', 'green'],
-    'shape': ['circle', 'square', 'triangle'],
-    'size': ['small', 'medium', 'large'],
-    'pattern': ['solid', 'striped', 'dotted'],
-    'opacity': ['transparent', 'translucent', 'opaque']
+    'color': ['red', 'blue', 'green', 'yellow', 'purple'],
+    'shape': ['circle', 'square', 'triangle', 'diamond', 'pentagon'],
+    'size': ['tiny', 'small', 'medium', 'large', 'huge'],
+    'pattern': ['solid', 'striped', 'dotted', 'checkered', 'gradient'],
+    'opacity': ['transparent', 'faint', 'translucent', 'semi-opaque', 'opaque']
 }
 
 # Default values for inactive property categories
