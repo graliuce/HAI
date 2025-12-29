@@ -108,7 +108,7 @@ class GridWorld:
         target_non_rewarding = self.num_objects - target_rewarding
 
         occupied_positions = set()
-        obj_id = 0
+        temp_objects = []  # Collect objects in a list first
 
         # First, create rewarding objects
         rewarding_created = 0
@@ -117,12 +117,11 @@ class GridWorld:
 
         while rewarding_created < target_rewarding and attempts < max_attempts:
             position = self._get_random_empty_position(occupied_positions)
-            obj = create_random_object(obj_id, position, self.active_categories, self.rng)
+            obj = create_random_object(0, position, self.active_categories, self.rng)  # Temp ID
 
             if obj.has_any_property(self.reward_properties):
-                self.objects[obj_id] = obj
+                temp_objects.append((position, obj))
                 occupied_positions.add(position)
-                obj_id += 1
                 rewarding_created += 1
 
             attempts += 1
@@ -133,23 +132,37 @@ class GridWorld:
 
         while non_rewarding_created < target_non_rewarding and attempts < max_attempts:
             position = self._get_random_empty_position(occupied_positions)
-            obj = create_random_object(obj_id, position, self.active_categories, self.rng)
+            obj = create_random_object(0, position, self.active_categories, self.rng)  # Temp ID
 
             if not obj.has_any_property(self.reward_properties):
-                self.objects[obj_id] = obj
+                temp_objects.append((position, obj))
                 occupied_positions.add(position)
-                obj_id += 1
                 non_rewarding_created += 1
 
             attempts += 1
 
         # If we couldn't create enough non-rewarding, just fill with random
-        while len(self.objects) < self.num_objects:
+        while len(temp_objects) < self.num_objects:
             position = self._get_random_empty_position(occupied_positions)
-            obj = create_random_object(obj_id, position, self.active_categories, self.rng)
-            self.objects[obj_id] = obj
+            obj = create_random_object(0, position, self.active_categories, self.rng)
+            temp_objects.append((position, obj))
             occupied_positions.add(position)
-            obj_id += 1
+
+        # Shuffle the objects to remove correlation between ID and reward status
+        self.rng.shuffle(temp_objects)
+
+        # Assign final IDs after shuffling
+        for obj_id, (position, obj) in enumerate(temp_objects):
+            # Create new object with correct ID
+            self.objects[obj_id] = GridObject(
+                id=obj_id,
+                position=position,
+                color=obj.color,
+                shape=obj.shape,
+                size=obj.size,
+                pattern=obj.pattern,
+                opacity=obj.opacity
+            )
 
     def _get_random_empty_position(
         self,
