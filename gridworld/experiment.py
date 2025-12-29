@@ -1,14 +1,18 @@
 """Experiment runner for the gridworld multi-agent task."""
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 from dataclasses import dataclass, field
 
 from .environment import GridWorld
 from .agents.human import HumanAgent
 from .agents.dqn_robot import DQNRobotAgent
+from .agents.hierarchical_dqn_robot import HierarchicalDQNRobotAgent
 from .objects import PROPERTY_CATEGORIES
 from tqdm import tqdm
+
+# Type alias for robot agents
+RobotAgent = Union[DQNRobotAgent, HierarchicalDQNRobotAgent]
 
 
 @dataclass
@@ -42,6 +46,11 @@ class ExperimentConfig:
     learning_starts: int = 1000
     hidden_dims: List[int] = field(default_factory=lambda: [64, 64])
 
+    # Hierarchical policy parameters
+    use_hierarchical: bool = False
+    num_goal_candidates: int = 5  # Number of candidate goals for high-level policy
+    high_level_interval: int = 5  # Steps between high-level decisions
+
     # Random seed
     seed: Optional[int] = None
 
@@ -72,7 +81,7 @@ class VariableExperimentResult:
 def run_episode(
     env: GridWorld,
     human: HumanAgent,
-    robot: DQNRobotAgent,
+    robot: RobotAgent,
     training: bool = True
 ) -> EpisodeResult:
     """
@@ -141,9 +150,9 @@ def run_episode(
 def create_variable_robot_agent(
     config: ExperimentConfig,
     env: GridWorld,
-) -> DQNRobotAgent:
+) -> RobotAgent:
     """
-    Create a DQN robot agent that can handle all property counts.
+    Create a robot agent that can handle all property counts.
 
     This agent is trained with all 5 property categories so it can
     generalize across different numbers of active properties.
@@ -153,36 +162,60 @@ def create_variable_robot_agent(
         env: The GridWorld environment
 
     Returns:
-        DQN robot agent with all categories active
+        Robot agent (flat DQN or hierarchical) with all categories active
     """
     # Use ALL property categories so the agent can handle any property count
     all_categories = PROPERTY_CATEGORIES[:5]
     # Calculate total timesteps for exploration schedule
     total_timesteps = config.num_train_episodes * config.max_steps_per_episode
-    return DQNRobotAgent(
-        num_actions=env.NUM_ACTIONS,
-        learning_rate=config.learning_rate,
-        discount_factor=config.discount_factor,
-        epsilon_start=config.epsilon_start,
-        epsilon_end=config.epsilon_end,
-        exploration_fraction=config.exploration_fraction,
-        total_timesteps=total_timesteps,
-        buffer_size=config.buffer_size,
-        batch_size=config.batch_size,
-        target_update_freq=config.target_update_freq,
-        train_freq=config.train_freq,
-        gradient_steps=config.gradient_steps,
-        learning_starts=config.learning_starts,
-        hidden_dims=config.hidden_dims,
-        grid_size=config.grid_size,
-        active_categories=all_categories,
-        seed=config.seed
-    )
+
+    if config.use_hierarchical:
+        return HierarchicalDQNRobotAgent(
+            num_actions=env.NUM_ACTIONS,
+            num_goal_candidates=config.num_goal_candidates,
+            high_level_interval=config.high_level_interval,
+            learning_rate=config.learning_rate,
+            discount_factor=config.discount_factor,
+            epsilon_start=config.epsilon_start,
+            epsilon_end=config.epsilon_end,
+            exploration_fraction=config.exploration_fraction,
+            total_timesteps=total_timesteps,
+            buffer_size=config.buffer_size,
+            batch_size=config.batch_size,
+            target_update_freq=config.target_update_freq,
+            train_freq=config.train_freq,
+            gradient_steps=config.gradient_steps,
+            learning_starts=config.learning_starts,
+            hidden_dims=config.hidden_dims,
+            grid_size=config.grid_size,
+            active_categories=all_categories,
+            seed=config.seed
+        )
+    else:
+        return DQNRobotAgent(
+            num_actions=env.NUM_ACTIONS,
+            learning_rate=config.learning_rate,
+            discount_factor=config.discount_factor,
+            epsilon_start=config.epsilon_start,
+            epsilon_end=config.epsilon_end,
+            exploration_fraction=config.exploration_fraction,
+            total_timesteps=total_timesteps,
+            buffer_size=config.buffer_size,
+            batch_size=config.batch_size,
+            target_update_freq=config.target_update_freq,
+            train_freq=config.train_freq,
+            gradient_steps=config.gradient_steps,
+            learning_starts=config.learning_starts,
+            hidden_dims=config.hidden_dims,
+            grid_size=config.grid_size,
+            active_categories=all_categories,
+            seed=config.seed
+        )
 
 
 def run_variable_training(
     config: ExperimentConfig,
-    robot: DQNRobotAgent,
+    robot: RobotAgent,
     property_counts: List[int],
     verbose: bool = False
 ) -> List[float]:
@@ -241,7 +274,7 @@ def run_variable_training(
 
 def run_evaluation_per_property_count(
     config: ExperimentConfig,
-    robot: DQNRobotAgent,
+    robot: RobotAgent,
     num_distinct_properties: int,
     num_episodes: int
 ) -> List[EpisodeResult]:
@@ -289,7 +322,7 @@ def run_variable_property_experiment(
     property_counts: List[int] = None,
     num_seeds: int = 1,
     verbose: bool = True
-) -> Tuple[List[VariableExperimentResult], DQNRobotAgent]:
+) -> Tuple[List[VariableExperimentResult], RobotAgent]:
     """
     Run experiment with variable property training and per-property evaluation.
 
@@ -347,6 +380,9 @@ def run_variable_property_experiment(
             gradient_steps=config.gradient_steps,
             learning_starts=config.learning_starts,
             hidden_dims=config.hidden_dims,
+            use_hierarchical=config.use_hierarchical,
+            num_goal_candidates=config.num_goal_candidates,
+            high_level_interval=config.high_level_interval,
             seed=seed
         )
 
@@ -449,7 +485,7 @@ def render_episode_gif(
     output_path: str,
     max_steps: int = 50,
     fps: int = 4,
-    trained_robot: Optional[DQNRobotAgent] = None
+    trained_robot: Optional[RobotAgent] = None
 ) -> None:
     """
     Render and save a GIF of an entire episode for visualization.
