@@ -88,15 +88,11 @@ def parse_args():
     # Hierarchical policy parameters
     parser.add_argument(
         "--hierarchical", action="store_true",
-        help="Use hierarchical policy with goal-setting high-level and goal-conditioned low-level"
+        help="Use hierarchical policy with goal-setting high-level and A* navigation low-level"
     )
     parser.add_argument(
-        "--num-goal-candidates", type=int, default=5,
-        help="Number of candidate goals for high-level policy (default: 5)"
-    )
-    parser.add_argument(
-        "--high-level-interval", type=int, default=5,
-        help="Steps between high-level goal decisions (default: 5)"
+        "--high-level-interval", type=int, default=3,
+        help="Steps between high-level goal decisions when goal is null (default: 3)"
     )
 
     # Experiment parameters
@@ -295,7 +291,6 @@ def main():
         learning_starts=args.learning_starts,
         hidden_dims=hidden_dims,
         use_hierarchical=args.hierarchical,
-        num_goal_candidates=args.num_goal_candidates,
         high_level_interval=args.high_level_interval,
         seed=args.seed
     )
@@ -319,8 +314,7 @@ def main():
     print(f"  Learning starts: {config.learning_starts}")
     print(f"  Hidden dims: {config.hidden_dims}")
     if config.use_hierarchical:
-        print(f"  Goal candidates: {config.num_goal_candidates}")
-        print(f"  High-level interval: {config.high_level_interval}")
+        print(f"  High-level interval (null goal): {config.high_level_interval}")
     print(f"  Property counts to test: {property_counts}")
     print(f"  Number of seeds: {args.num_seeds}")
     print(f"  Base seed: {args.seed}")
@@ -393,7 +387,6 @@ def main():
         'learning_starts': config.learning_starts,
         'hidden_dims': config.hidden_dims,
         'use_hierarchical': config.use_hierarchical,
-        'num_goal_candidates': config.num_goal_candidates,
         'high_level_interval': config.high_level_interval,
         'num_seeds': args.num_seeds,
         'base_seed': args.seed,

@@ -48,8 +48,7 @@ class ExperimentConfig:
 
     # Hierarchical policy parameters
     use_hierarchical: bool = False
-    num_goal_candidates: int = 5  # Number of candidate goals for high-level policy
-    high_level_interval: int = 5  # Steps between high-level decisions
+    high_level_interval: int = 3  # Steps between high-level decisions (only when goal is null)
 
     # Random seed
     seed: Optional[int] = None
@@ -172,7 +171,6 @@ def create_variable_robot_agent(
     if config.use_hierarchical:
         return HierarchicalDQNRobotAgent(
             num_actions=env.NUM_ACTIONS,
-            num_goal_candidates=config.num_goal_candidates,
             high_level_interval=config.high_level_interval,
             learning_rate=config.learning_rate,
             discount_factor=config.discount_factor,
@@ -188,6 +186,7 @@ def create_variable_robot_agent(
             learning_starts=config.learning_starts,
             hidden_dims=config.hidden_dims,
             grid_size=config.grid_size,
+            num_objects=config.num_objects,
             active_categories=all_categories,
             seed=config.seed
         )
@@ -381,7 +380,6 @@ def run_variable_property_experiment(
             learning_starts=config.learning_starts,
             hidden_dims=config.hidden_dims,
             use_hierarchical=config.use_hierarchical,
-            num_goal_candidates=config.num_goal_candidates,
             high_level_interval=config.high_level_interval,
             seed=seed
         )
