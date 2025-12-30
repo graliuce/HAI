@@ -569,7 +569,14 @@ class HierarchicalDQNRobotAgent:
 
         High-level: Select goal object (learned DQN)
         Low-level: Navigate to goal (A* pathfinding)
+
+        Robot stays in place until human has collected at least one object.
         """
+        # Robot must wait until human collects first object
+        robot_can_collect = observation.get('robot_can_collect', False)
+        if not robot_can_collect:
+            return 4  # stay
+
         # Update property inference
         self._update_inference(observation)
 
