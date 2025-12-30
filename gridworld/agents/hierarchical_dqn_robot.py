@@ -63,7 +63,7 @@ class HighLevelQNetwork(nn.Module):
         """
         Args:
             input_dim: Dimension of state features
-            max_num_goals: Maximum number of goals (including null goal at index 0)
+            max_num_goals: Maximum number of goals (object indices)
             hidden_dims: List of hidden layer dimensions
         """
         super().__init__()
@@ -79,7 +79,7 @@ class HighLevelQNetwork(nn.Module):
             layers.append(nn.ReLU())
             prev_dim = hidden_dim
 
-        # Output: Q-value for each possible goal (0 = null, 1..N = objects)
+        # Output: Q-value for each possible goal (0..N-1 = objects)
         layers.append(nn.Linear(prev_dim, max_num_goals))
         self.network = nn.Sequential(*layers)
 
@@ -90,16 +90,17 @@ class HighLevelQNetwork(nn.Module):
 class HierarchicalDQNRobotAgent:
     """
     A hierarchical robot agent with:
-    - High-level policy (learned): Selects which object to collect (goal) or null (no target)
+    - High-level policy (learned): Selects which object to collect (goal)
     - Low-level policy (A* pathfinding): Navigates to the selected goal object
 
     Goal selection:
-    - Action 0: Null goal (no target, stay in place)
-    - Action 1..N: Select object at index i-1 as the goal
+    - Action 0..N-1: Select object at index i as the goal
 
     Re-triggering logic:
-    - If goal is a real object: re-trigger only when object is collected or unavailable
-    - If goal is null: re-trigger every high_level_interval steps
+    - Re-trigger when target object is collected or becomes unavailable
+
+    The robot can only start collecting objects after the human has collected
+    at least one object (controlled by environment).
 
     Only the high-level policy is trained. The low-level uses A* pathfinding.
     """
@@ -134,7 +135,7 @@ class HierarchicalDQNRobotAgent:
         Args:
             num_actions: Number of low-level actions (5: up, down, left, right, stay)
             num_goal_candidates: Deprecated, kept for backward compatibility
-            high_level_interval: Steps between high-level decisions when goal is null
+            high_level_interval: Deprecated, kept for backward compatibility
             learning_rate: Learning rate for optimizer
             discount_factor: Discount factor (gamma)
             epsilon_start: Initial exploration rate
@@ -174,8 +175,8 @@ class HierarchicalDQNRobotAgent:
         self.num_objects = num_objects
         self.hidden_dims = hidden_dims or [128, 128]
 
-        # Max goals = null (1) + max objects
-        self.max_num_goals = 1 + num_objects
+        # Max goals = max objects (no null goal)
+        self.max_num_goals = num_objects
 
         # Current exploration rate for high-level policy
         self.epsilon = epsilon_start
@@ -262,6 +263,8 @@ class HierarchicalDQNRobotAgent:
         - Robot position (2)
         - Human position (2)
         - Relative position of human (2)
+        - Robot can collect flag (1)
+        - Number of human collected objects (1, normalized)
         - Human collected properties (one-hot)
         - Inferred property scores
         - For each possible object slot (up to num_objects):
@@ -271,6 +274,7 @@ class HierarchicalDQNRobotAgent:
             - Properties (one-hot)
         """
         pos_features = 6
+        collection_status_features = 2  # can_collect flag + num_collected
         collected_features = self.total_property_values
         props_dim = sum(len(PROPERTY_VALUES[cat]) for cat in self.active_categories)
         inferred_features = props_dim
@@ -279,7 +283,7 @@ class HierarchicalDQNRobotAgent:
         per_object_features = 1 + 3 + props_dim
         object_features = self.num_objects * per_object_features
 
-        return pos_features + collected_features + inferred_features + object_features
+        return pos_features + collection_status_features + collected_features + inferred_features + object_features
 
     def _encode_high_level_input(self, observation: dict) -> np.ndarray:
         """Encode observation for high-level policy."""
@@ -298,6 +302,14 @@ class HierarchicalDQNRobotAgent:
         # Relative position of human to robot
         features.append((human_pos[0] - robot_pos[0]) / self.grid_size)
         features.append((human_pos[1] - robot_pos[1]) / self.grid_size)
+
+        # Robot can collect flag (1 if human has collected at least one object)
+        robot_can_collect = observation.get('robot_can_collect', False)
+        features.append(1.0 if robot_can_collect else 0.0)
+
+        # Number of human collected objects (normalized by num_objects)
+        human_collected = observation.get('human_collected', [])
+        features.append(len(human_collected) / max(1, self.num_objects))
 
         # Human collected properties (one-hot)
         collected_props = np.zeros(self.total_property_values)
@@ -403,17 +415,12 @@ class HierarchicalDQNRobotAgent:
 
         Logic:
         - If no current goal: select new goal
-        - If current goal is null (action 0): re-trigger every high_level_interval steps
-        - If current goal is a real object: re-trigger only when object is collected/unavailable
+        - Re-trigger only when target object is collected or becomes unavailable
         """
         if self.current_goal_action is None:
             return True
 
-        # Null goal: re-trigger every interval
-        if self.current_goal_action == 0:
-            return self.steps_since_goal_selection >= self.high_level_interval
-
-        # Real object goal: only re-trigger if object no longer exists
+        # Re-trigger if object no longer exists
         if self.current_goal_object_id is not None:
             objects = observation.get('objects', {})
             if self.current_goal_object_id not in objects:
@@ -423,22 +430,22 @@ class HierarchicalDQNRobotAgent:
 
     def _select_goal(self, observation: dict, training: bool = True) -> int:
         """
-        High-level policy: Select which object to collect or null.
+        High-level policy: Select which object to collect.
 
         Returns:
-            Goal action: 0 = null, 1..N = object at index i-1
+            Goal action: 0..N-1 = object at index i
         """
         high_level_input = self._encode_high_level_input(observation)
         objects = observation.get('objects', {})
         sorted_obj_ids = sorted(objects.keys())
         num_objects = len(sorted_obj_ids)
 
-        # Valid actions: 0 (null) + 1..num_objects (real objects)
-        num_valid_actions = 1 + num_objects
-
-        if num_valid_actions == 1:
-            # Only null action available (no objects)
+        if num_objects == 0:
+            # No objects available - return 0 (will be handled as no valid goal)
             return 0
+
+        # Valid actions: 0..num_objects-1 (all objects)
+        num_valid_actions = num_objects
 
         # Epsilon-greedy for high-level
         if training and self.rng.random() < self.epsilon:
@@ -529,8 +536,8 @@ class HierarchicalDQNRobotAgent:
 
     def _get_navigation_action(self, observation: dict) -> int:
         """Use A* to navigate toward the current goal."""
-        # Null goal means stay in place
-        if self.current_goal_action == 0 or self.current_goal_position is None:
+        # No valid goal position means stay in place
+        if self.current_goal_position is None:
             return 4  # stay
 
         robot_pos = observation['robot_position']
@@ -560,8 +567,8 @@ class HierarchicalDQNRobotAgent:
         """
         Get action using hierarchical policy.
 
-        High-level: Select goal object or null (learned DQN)
-        Low-level: Navigate to goal (A* pathfinding) or stay if null
+        High-level: Select goal object (learned DQN)
+        Low-level: Navigate to goal (A* pathfinding)
         """
         # Update property inference
         self._update_inference(observation)
@@ -586,24 +593,18 @@ class HierarchicalDQNRobotAgent:
             self.cumulative_reward = 0.0
             self.current_path = []
 
-            # Update goal object info
-            if self.current_goal_action == 0:
-                # Null goal
+            # Update goal object info (action i = object at index i)
+            objects = observation.get('objects', {})
+            sorted_obj_ids = sorted(objects.keys())
+            obj_index = self.current_goal_action  # action 0 -> index 0
+
+            if obj_index < len(sorted_obj_ids):
+                obj_id = sorted_obj_ids[obj_index]
+                self.current_goal_object_id = obj_id
+                self.current_goal_position = objects[obj_id]['position']
+            else:
                 self.current_goal_object_id = None
                 self.current_goal_position = None
-            else:
-                # Real object goal
-                objects = observation.get('objects', {})
-                sorted_obj_ids = sorted(objects.keys())
-                obj_index = self.current_goal_action - 1  # action 1 -> index 0
-
-                if obj_index < len(sorted_obj_ids):
-                    obj_id = sorted_obj_ids[obj_index]
-                    self.current_goal_object_id = obj_id
-                    self.current_goal_position = objects[obj_id]['position']
-                else:
-                    self.current_goal_object_id = None
-                    self.current_goal_position = None
 
         # Update goal position if object still exists
         if self.current_goal_object_id is not None:
@@ -614,7 +615,7 @@ class HierarchicalDQNRobotAgent:
                 # Goal no longer exists
                 self.current_goal_position = None
 
-        # Use A* to navigate toward goal (or stay if null)
+        # Use A* to navigate toward goal
         return self._get_navigation_action(observation)
 
     def _update_inference(self, observation: dict):

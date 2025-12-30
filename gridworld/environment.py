@@ -197,6 +197,7 @@ class GridWorld:
         - Human's position
         - All objects with their positions and properties
         - Objects collected by the human (key for inference!)
+        - Whether robot can collect (human has collected at least one)
         """
         return {
             'robot_position': self.robot_position,
@@ -216,6 +217,7 @@ class GridWorld:
                 for obj in self.human_collected
             ],
             'robot_collected': [obj.id for obj in self.robot_collected],
+            'robot_can_collect': len(self.human_collected) > 0,
             'active_categories': self.active_categories,
             'step': self.step_count
         }
@@ -302,6 +304,9 @@ class GridWorld:
         """Check if agents collected any objects. Return robot's reward."""
         robot_reward = 0.0
 
+        # Robot can only collect after human has collected at least one object
+        robot_can_collect = len(self.human_collected) > 0
+
         # Find objects at agent positions
         objects_to_remove = []
 
@@ -311,8 +316,8 @@ class GridWorld:
                 self.human_collected.append(obj)
                 objects_to_remove.append(obj_id)
 
-            # Robot collection (only if human didn't also collect it)
-            elif obj.position == self.robot_position:
+            # Robot collection (only if human didn't also collect it AND robot is unlocked)
+            elif obj.position == self.robot_position and robot_can_collect:
                 self.robot_collected.append(obj)
                 objects_to_remove.append(obj_id)
 
