@@ -228,12 +228,13 @@ class HierarchicalDQNRobotAgent:
         self.property_counts: Dict[str, int] = defaultdict(int)
 
         # Hierarchical state tracking
-        self.current_goal_action: Optional[int] = None  # 0 = null, 1..N = object index + 1
+        self.current_goal_action: Optional[int] = None  # 0..N-1 = object index
         self.current_goal_object_id: Optional[int] = None
         self.current_goal_position: Optional[Tuple[int, int]] = None
         self.steps_since_goal_selection: int = 0
         self.high_level_state: Optional[np.ndarray] = None
         self.cumulative_reward: float = 0.0
+        self.has_started: bool = False  # True after human collects first object
 
         # A* pathfinding state
         self.current_path: List[Tuple[int, int]] = []
@@ -386,6 +387,7 @@ class HierarchicalDQNRobotAgent:
         self.steps_since_goal_selection = 0
         self.high_level_state = None
         self.cumulative_reward = 0.0
+        self.has_started = False
         self.current_path = []
 
     def reset_learning(self):
@@ -571,13 +573,21 @@ class HierarchicalDQNRobotAgent:
         Low-level: Navigate to goal (A* pathfinding)
 
         Robot stays in place until human has collected at least one object.
+        The high-level policy is first called right after human collects.
         """
         # Robot must wait until human collects first object
         robot_can_collect = observation.get('robot_can_collect', False)
         if not robot_can_collect:
             return 4  # stay
 
-        # Update property inference
+        # First time human has collected - mark as started and update inference
+        if not self.has_started:
+            self.has_started = True
+            self._update_inference(observation)
+            # Force goal selection on first step after human collects
+            self.current_goal_action = None
+
+        # Update property inference (for subsequent steps)
         self._update_inference(observation)
 
         # Check if we need to select a new goal
