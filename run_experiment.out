@@ -1,0 +1,64 @@
+============================================================
+Gridworld Variable Property Training Experiment (Hierarchical)
+============================================================
+
+Configuration:
+  Policy type: Hierarchical
+  Grid size: 10x10
+  Number of objects: 20
+  Reward ratio: 0.4
+  Rewarding properties (K): 2
+  Property values per category: 5
+  Training episodes: 1000000
+  Evaluation episodes: 1000
+  Learning rate: 0.00025
+  Buffer size: 100000
+  Batch size: 128
+  Target update freq: 100
+  Learning starts: 500
+  Hidden dims: [128, 128]
+  High-level interval (null goal): 3
+  Property counts to test: [1, 2, 3, 4, 5]
+  Number of seeds: 1
+  Base seed: 42
+
+============================================================
+Running variable property training experiment...
+============================================================
+Training: Agent sees all property counts during training
+Evaluation: Agent tested separately on each property count
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [2:22:19<00:00, 8539.11s/it]100%|██████████| 1/1 [2:22:19<00:00, 8539.11s/it]
+
+============================================================
+RESULTS SUMMARY
+============================================================
+
+Evaluation Results by Property Count:
+
+Props    Eval Mean    Eval Std     Eval SEM    
+------------------------------------------------
+1        0.48         0.00         0.00        
+2        0.44         0.00         0.00        
+3        0.42         0.00         0.00        
+4        0.44         0.00         0.00        
+5        0.54         0.00         0.00        
+
+Overall training mean (last 100 eps): 0.53
+
+Correlation between property count and eval return: 0.451
+RESULT: No negative correlation observed.
+  Agent generalizes well across property counts.
+
+Summary saved to: results/summary.json
+
+Evaluation plot saved to: results/eval_returns_vs_properties.png
+Training curve saved to: results/training_curve.png
+
+Rendering episode GIFs...
+  Saved GIF for 1 distinct properties: results/episode_1_props.gif
+  Saved GIF for 2 distinct properties: results/episode_2_props.gif
+  Saved GIF for 3 distinct properties: results/episode_3_props.gif
+  Saved GIF for 4 distinct properties: results/episode_4_props.gif
+  Saved GIF for 5 distinct properties: results/episode_5_props.gif
+
+Experiment complete!

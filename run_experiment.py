@@ -48,6 +48,10 @@ def parse_args():
         "--num-rewarding-properties", type=int, default=2,
         help="Number of properties that give reward (K) (default: 2)"
     )
+    parser.add_argument(
+        "--num-property-values", type=int, default=5,
+        help="Number of values per property category, 1-5 (default: 5)"
+    )
 
     # Training parameters
     parser.add_argument(
@@ -83,6 +87,16 @@ def parse_args():
     parser.add_argument(
         "--hidden-dims", type=str, default="128,128",
         help="Comma-separated hidden layer dimensions (default: 128,128)"
+    )
+
+    # Hierarchical policy parameters
+    parser.add_argument(
+        "--hierarchical", action="store_true",
+        help="Use hierarchical policy with goal-setting high-level and A* navigation low-level"
+    )
+    parser.add_argument(
+        "--high-level-interval", type=int, default=3,
+        help="Steps between high-level goal decisions when goal is null (default: 3)"
     )
 
     # Experiment parameters
@@ -272,6 +286,7 @@ def main():
         num_objects=args.num_objects,
         reward_ratio=args.reward_ratio,
         num_rewarding_properties=args.num_rewarding_properties,
+        num_property_values=args.num_property_values,
         num_train_episodes=args.train_episodes,
         num_eval_episodes=args.eval_episodes,
         learning_rate=args.learning_rate,
@@ -280,17 +295,22 @@ def main():
         target_update_freq=args.target_update_freq,
         learning_starts=args.learning_starts,
         hidden_dims=hidden_dims,
+        use_hierarchical=args.hierarchical,
+        high_level_interval=args.high_level_interval,
         seed=args.seed
     )
 
+    policy_type = "Hierarchical" if config.use_hierarchical else "Flat DQN"
     print("=" * 60)
-    print("Gridworld Variable Property Training Experiment (DQN)")
+    print(f"Gridworld Variable Property Training Experiment ({policy_type})")
     print("=" * 60)
     print(f"\nConfiguration:")
+    print(f"  Policy type: {policy_type}")
     print(f"  Grid size: {config.grid_size}x{config.grid_size}")
     print(f"  Number of objects: {config.num_objects}")
     print(f"  Reward ratio: {config.reward_ratio}")
     print(f"  Rewarding properties (K): {config.num_rewarding_properties}")
+    print(f"  Property values per category: {config.num_property_values}")
     print(f"  Training episodes: {config.num_train_episodes}")
     print(f"  Evaluation episodes: {config.num_eval_episodes}")
     print(f"  Learning rate: {config.learning_rate}")
@@ -299,6 +319,8 @@ def main():
     print(f"  Target update freq: {config.target_update_freq}")
     print(f"  Learning starts: {config.learning_starts}")
     print(f"  Hidden dims: {config.hidden_dims}")
+    if config.use_hierarchical:
+        print(f"  High-level interval (null goal): {config.high_level_interval}")
     print(f"  Property counts to test: {property_counts}")
     print(f"  Number of seeds: {args.num_seeds}")
     print(f"  Base seed: {args.seed}")
@@ -362,6 +384,7 @@ def main():
         'num_objects': config.num_objects,
         'reward_ratio': config.reward_ratio,
         'num_rewarding_properties': config.num_rewarding_properties,
+        'num_property_values': config.num_property_values,
         'num_train_episodes': config.num_train_episodes,
         'num_eval_episodes': config.num_eval_episodes,
         'learning_rate': config.learning_rate,
@@ -370,6 +393,8 @@ def main():
         'target_update_freq': config.target_update_freq,
         'learning_starts': config.learning_starts,
         'hidden_dims': config.hidden_dims,
+        'use_hierarchical': config.use_hierarchical,
+        'high_level_interval': config.high_level_interval,
         'num_seeds': args.num_seeds,
         'base_seed': args.seed,
     }

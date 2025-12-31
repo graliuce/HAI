@@ -11,6 +11,7 @@ from .objects import (
     GridObject,
     PROPERTY_CATEGORIES,
     PROPERTY_VALUES,
+    MAX_PROPERTY_VALUES,
     create_random_object,
     sample_reward_properties
 )
@@ -35,6 +36,7 @@ class GridWorld:
         reward_ratio: float = 0.3,
         num_rewarding_properties: int = 2,
         num_distinct_properties: int = 2,
+        num_property_values: int = MAX_PROPERTY_VALUES,
         seed: Optional[int] = None
     ):
         """
@@ -46,6 +48,7 @@ class GridWorld:
             reward_ratio: Proportion of objects that should be rewarding (approximate)
             num_rewarding_properties: K - number of properties that give reward
             num_distinct_properties: Number of property categories that vary (1-5)
+            num_property_values: Number of values per property category (1-5, default 5)
             seed: Random seed for reproducibility
         """
         self.grid_size = grid_size
@@ -53,6 +56,7 @@ class GridWorld:
         self.reward_ratio = reward_ratio
         self.num_rewarding_properties = num_rewarding_properties
         self.num_distinct_properties = min(num_distinct_properties, 5)
+        self.num_property_values = max(1, min(num_property_values, MAX_PROPERTY_VALUES))
 
         self.rng = random.Random(seed)
         self.np_rng = np.random.RandomState(seed)
@@ -88,7 +92,8 @@ class GridWorld:
         self.reward_properties = sample_reward_properties(
             self.num_rewarding_properties,
             self.active_categories,
-            self.rng
+            self.rng,
+            self.num_property_values
         )
 
         # Generate objects ensuring some are rewarding
@@ -108,7 +113,7 @@ class GridWorld:
         target_non_rewarding = self.num_objects - target_rewarding
 
         occupied_positions = set()
-        obj_id = 0
+        temp_objects = []  # Collect objects in a list first
 
         # First, create rewarding objects
         rewarding_created = 0
@@ -117,12 +122,13 @@ class GridWorld:
 
         while rewarding_created < target_rewarding and attempts < max_attempts:
             position = self._get_random_empty_position(occupied_positions)
-            obj = create_random_object(obj_id, position, self.active_categories, self.rng)
+            obj = create_random_object(
+                0, position, self.active_categories, self.rng, self.num_property_values
+            )
 
             if obj.has_any_property(self.reward_properties):
-                self.objects[obj_id] = obj
+                temp_objects.append((position, obj))
                 occupied_positions.add(position)
-                obj_id += 1
                 rewarding_created += 1
 
             attempts += 1
@@ -133,23 +139,41 @@ class GridWorld:
 
         while non_rewarding_created < target_non_rewarding and attempts < max_attempts:
             position = self._get_random_empty_position(occupied_positions)
-            obj = create_random_object(obj_id, position, self.active_categories, self.rng)
+            obj = create_random_object(
+                0, position, self.active_categories, self.rng, self.num_property_values
+            )
 
             if not obj.has_any_property(self.reward_properties):
-                self.objects[obj_id] = obj
+                temp_objects.append((position, obj))
                 occupied_positions.add(position)
-                obj_id += 1
                 non_rewarding_created += 1
 
             attempts += 1
 
         # If we couldn't create enough non-rewarding, just fill with random
-        while len(self.objects) < self.num_objects:
+        while len(temp_objects) < self.num_objects:
             position = self._get_random_empty_position(occupied_positions)
-            obj = create_random_object(obj_id, position, self.active_categories, self.rng)
-            self.objects[obj_id] = obj
+            obj = create_random_object(
+                0, position, self.active_categories, self.rng, self.num_property_values
+            )
+            temp_objects.append((position, obj))
             occupied_positions.add(position)
-            obj_id += 1
+
+        # Shuffle the objects to remove correlation between ID and reward status
+        self.rng.shuffle(temp_objects)
+
+        # Assign final IDs after shuffling
+        for obj_id, (position, obj) in enumerate(temp_objects):
+            # Create new object with correct ID
+            self.objects[obj_id] = GridObject(
+                id=obj_id,
+                position=position,
+                color=obj.color,
+                shape=obj.shape,
+                size=obj.size,
+                pattern=obj.pattern,
+                opacity=obj.opacity
+            )
 
     def _get_random_empty_position(
         self,
@@ -173,6 +197,7 @@ class GridWorld:
         - Human's position
         - All objects with their positions and properties
         - Objects collected by the human (key for inference!)
+        - Whether robot can collect (human has collected at least one)
         """
         return {
             'robot_position': self.robot_position,
@@ -192,6 +217,7 @@ class GridWorld:
                 for obj in self.human_collected
             ],
             'robot_collected': [obj.id for obj in self.robot_collected],
+            'robot_can_collect': len(self.human_collected) > 0,
             'active_categories': self.active_categories,
             'step': self.step_count
         }
@@ -278,6 +304,9 @@ class GridWorld:
         """Check if agents collected any objects. Return robot's reward."""
         robot_reward = 0.0
 
+        # Robot can only collect after human has collected at least one object
+        robot_can_collect = len(self.human_collected) > 0
+
         # Find objects at agent positions
         objects_to_remove = []
 
@@ -287,8 +316,8 @@ class GridWorld:
                 self.human_collected.append(obj)
                 objects_to_remove.append(obj_id)
 
-            # Robot collection (only if human didn't also collect it)
-            elif obj.position == self.robot_position:
+            # Robot collection (only if human didn't also collect it AND robot is unlocked)
+            elif obj.position == self.robot_position and robot_can_collect:
                 self.robot_collected.append(obj)
                 objects_to_remove.append(obj_id)
 
@@ -310,74 +339,6 @@ class GridWorld:
             if obj.has_any_property(self.reward_properties):
                 return False
         return True
-
-    def get_state_for_robot(self) -> Tuple:
-        """
-        Get a hashable state representation for Q-learning.
-
-        This is a simplified state that captures:
-        - Robot's position (discretized)
-        - Human's recent collection history (property pattern)
-        - Nearest objects and their properties
-        """
-        # Encode human collected properties as a frozenset
-        human_collected_props = frozenset()
-        if self.human_collected:
-            # Get properties from recently collected objects
-            recent = self.human_collected[-3:]  # Last 3 collected
-            props = set()
-            for obj in recent:
-                for cat in self.active_categories:
-                    props.add((cat, obj.get_properties()[cat]))
-            human_collected_props = frozenset(props)
-
-        # Find nearest objects to robot
-        nearest_info = self._get_nearest_objects_info(self.robot_position, n=3)
-
-        return (
-            self.robot_position,
-            self.human_position,
-            human_collected_props,
-            nearest_info
-        )
-
-    def _get_nearest_objects_info(
-        self,
-        position: Tuple[int, int],
-        n: int = 3
-    ) -> Tuple:
-        """Get info about nearest n objects to a position."""
-        if not self.objects:
-            return tuple()
-
-        # Calculate distances
-        distances = []
-        for obj_id, obj in self.objects.items():
-            dist = self._l2_distance(position, obj.position)
-            distances.append((dist, obj_id, obj))
-
-        distances.sort(key=lambda x: x[0])
-
-        # Get info for nearest objects
-        info = []
-        for i, (dist, obj_id, obj) in enumerate(distances[:n]):
-            # Relative position
-            rel_x = obj.position[0] - position[0]
-            rel_y = obj.position[1] - position[1]
-
-            # Discretized relative position
-            rel_x_disc = max(-2, min(2, rel_x // 2))
-            rel_y_disc = max(-2, min(2, rel_y // 2))
-
-            # Object properties (only active ones)
-            props = tuple(
-                obj.get_properties()[cat]
-                for cat in self.active_categories
-            )
-
-            info.append((rel_x_disc, rel_y_disc, props))
-
-        return tuple(info)
 
     @staticmethod
     def _l2_distance(pos1: Tuple[int, int], pos2: Tuple[int, int]) -> float:
@@ -444,27 +405,35 @@ class GridWorld:
         COLOR_MAP = {
             'red': '#E74C3C',
             'blue': '#3498DB',
-            'green': '#2ECC71'
+            'green': '#2ECC71',
+            'yellow': '#F1C40F',
+            'purple': '#9B59B6'
         }
 
         # Size mappings (relative to cell size)
         SIZE_MAP = {
+            'tiny': 0.10,
             'small': 0.15,
-            'medium': 0.25,
-            'large': 0.35
+            'medium': 0.22,
+            'large': 0.30,
+            'huge': 0.38
         }
 
         # Pattern mappings (hatch patterns)
         PATTERN_MAP = {
             'solid': '',
             'striped': '///',
-            'dotted': '...'
+            'dotted': '...',
+            'checkered': 'xx',
+            'gradient': '\\\\',
         }
 
         # Opacity mappings
         OPACITY_MAP = {
-            'transparent': 0.3,
+            'transparent': 0.2,
+            'faint': 0.4,
             'translucent': 0.6,
+            'semi-opaque': 0.8,
             'opaque': 1.0
         }
 
@@ -507,9 +476,22 @@ class GridWorld:
                     facecolor=color, edgecolor=edgecolor,
                     linewidth=linewidth, alpha=opacity, hatch=pattern
                 )
-            else:  # triangle
+            elif props['shape'] == 'triangle':
                 patch = RegularPolygon(
                     (center_x, center_y), numVertices=3, radius=size * 1.2,
+                    facecolor=color, edgecolor=edgecolor,
+                    linewidth=linewidth, alpha=opacity, hatch=pattern
+                )
+            elif props['shape'] == 'diamond':
+                patch = RegularPolygon(
+                    (center_x, center_y), numVertices=4, radius=size * 1.2,
+                    facecolor=color, edgecolor=edgecolor,
+                    linewidth=linewidth, alpha=opacity, hatch=pattern
+                )
+            else:  # pentagon
+                patch = RegularPolygon(
+                    (center_x, center_y), numVertices=5, radius=size * 1.2,
+                    orientation=np.pi / 10,  # Rotate so one vertex points up
                     facecolor=color, edgecolor=edgecolor,
                     linewidth=linewidth, alpha=opacity, hatch=pattern
                 )
@@ -588,24 +570,32 @@ class GridWorld:
         COLOR_MAP = {
             'red': '#E74C3C',
             'blue': '#3498DB',
-            'green': '#2ECC71'
+            'green': '#2ECC71',
+            'yellow': '#F1C40F',
+            'purple': '#9B59B6'
         }
 
         SIZE_MAP = {
+            'tiny': 0.10,
             'small': 0.15,
-            'medium': 0.25,
-            'large': 0.35
+            'medium': 0.22,
+            'large': 0.30,
+            'huge': 0.38
         }
 
         PATTERN_MAP = {
             'solid': '',
             'striped': '///',
-            'dotted': '...'
+            'dotted': '...',
+            'checkered': 'xx',
+            'gradient': '\\\\',
         }
 
         OPACITY_MAP = {
-            'transparent': 0.3,
+            'transparent': 0.2,
+            'faint': 0.4,
             'translucent': 0.6,
+            'semi-opaque': 0.8,
             'opaque': 1.0
         }
 
@@ -622,7 +612,7 @@ class GridWorld:
             props = obj.get_properties()
 
             color = COLOR_MAP.get(props['color'], '#888888')
-            size = SIZE_MAP.get(props['size'], 0.25)
+            size = SIZE_MAP.get(props['size'], 0.22)
             pattern = PATTERN_MAP.get(props['pattern'], '')
             opacity = OPACITY_MAP.get(props['opacity'], 1.0)
 
@@ -645,9 +635,22 @@ class GridWorld:
                     facecolor=color, edgecolor=edgecolor,
                     linewidth=linewidth, alpha=opacity, hatch=pattern
                 )
-            else:
+            elif props['shape'] == 'triangle':
                 patch = RegularPolygon(
                     (center_x, center_y), numVertices=3, radius=size * 1.2,
+                    facecolor=color, edgecolor=edgecolor,
+                    linewidth=linewidth, alpha=opacity, hatch=pattern
+                )
+            elif props['shape'] == 'diamond':
+                patch = RegularPolygon(
+                    (center_x, center_y), numVertices=4, radius=size * 1.2,
+                    facecolor=color, edgecolor=edgecolor,
+                    linewidth=linewidth, alpha=opacity, hatch=pattern
+                )
+            else:  # pentagon
+                patch = RegularPolygon(
+                    (center_x, center_y), numVertices=5, radius=size * 1.2,
+                    orientation=np.pi / 10,  # Rotate so one vertex points up
                     facecolor=color, edgecolor=edgecolor,
                     linewidth=linewidth, alpha=opacity, hatch=pattern
                 )

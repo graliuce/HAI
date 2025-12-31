@@ -8,12 +8,15 @@ import random
 PROPERTY_CATEGORIES = ['color', 'shape', 'size', 'pattern', 'opacity']
 
 PROPERTY_VALUES = {
-    'color': ['red', 'blue', 'green'],
-    'shape': ['circle', 'square', 'triangle'],
-    'size': ['small', 'medium', 'large'],
-    'pattern': ['solid', 'striped', 'dotted'],
-    'opacity': ['transparent', 'translucent', 'opaque']
+    'color': ['red', 'blue', 'green', 'yellow', 'purple'],
+    'shape': ['circle', 'square', 'triangle', 'diamond', 'pentagon'],
+    'size': ['tiny', 'small', 'medium', 'large', 'huge'],
+    'pattern': ['solid', 'striped', 'dotted', 'checkered', 'gradient'],
+    'opacity': ['transparent', 'faint', 'translucent', 'semi-opaque', 'opaque']
 }
+
+# Maximum number of values per property
+MAX_PROPERTY_VALUES = 5
 
 # Default values for inactive property categories
 DEFAULT_VALUES = {
@@ -23,6 +26,21 @@ DEFAULT_VALUES = {
     'pattern': 'solid',
     'opacity': 'opaque'
 }
+
+
+def get_property_values(category: str, num_values: int = MAX_PROPERTY_VALUES) -> List[str]:
+    """
+    Get the property values for a category, limited to num_values.
+
+    Args:
+        category: The property category
+        num_values: Number of values to use (1-5, default 5)
+
+    Returns:
+        List of property values for that category
+    """
+    num_values = max(1, min(num_values, MAX_PROPERTY_VALUES))
+    return PROPERTY_VALUES[category][:num_values]
 
 
 @dataclass
@@ -80,7 +98,8 @@ def create_random_object(
     obj_id: int,
     position: Tuple[int, int],
     active_categories: List[str],
-    rng: random.Random = None
+    rng: random.Random = None,
+    num_property_values: int = MAX_PROPERTY_VALUES
 ) -> GridObject:
     """
     Create a random object with properties.
@@ -90,6 +109,7 @@ def create_random_object(
         position: (x, y) position in the grid
         active_categories: List of property categories that should vary
         rng: Random number generator (optional)
+        num_property_values: Number of values per property category (1-5, default 5)
 
     Returns:
         A GridObject with random properties for active categories
@@ -100,7 +120,8 @@ def create_random_object(
     props = {}
     for category in PROPERTY_CATEGORIES:
         if category in active_categories:
-            props[category] = rng.choice(PROPERTY_VALUES[category])
+            values = get_property_values(category, num_property_values)
+            props[category] = rng.choice(values)
         else:
             props[category] = DEFAULT_VALUES[category]
 
@@ -114,7 +135,8 @@ def create_random_object(
 def sample_reward_properties(
     k: int,
     active_categories: List[str],
-    rng: random.Random = None
+    rng: random.Random = None,
+    num_property_values: int = MAX_PROPERTY_VALUES
 ) -> Set[str]:
     """
     Sample K property values that will give reward.
@@ -123,6 +145,7 @@ def sample_reward_properties(
         k: Number of rewarding properties to sample
         active_categories: List of active property categories
         rng: Random number generator (optional)
+        num_property_values: Number of values per property category (1-5, default 5)
 
     Returns:
         Set of property values that give reward
@@ -133,7 +156,7 @@ def sample_reward_properties(
     # Get all possible property values from active categories
     all_values = []
     for category in active_categories:
-        all_values.extend(PROPERTY_VALUES[category])
+        all_values.extend(get_property_values(category, num_property_values))
 
     # Sample K unique values
     return set(rng.sample(all_values, min(k, len(all_values))))

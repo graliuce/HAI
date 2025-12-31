@@ -419,6 +419,7 @@ class DQNRobotAgent:
         Get the action for the robot agent.
 
         Uses epsilon-greedy policy during training.
+        Robot stays in place until human has collected at least one object.
 
         Args:
             observation: Current observation
@@ -427,6 +428,11 @@ class DQNRobotAgent:
         Returns:
             Action (0=up, 1=down, 2=left, 3=right, 4=stay)
         """
+        # Robot must wait until human collects first object
+        robot_can_collect = observation.get('robot_can_collect', False)
+        if not robot_can_collect:
+            return 4  # stay
+
         # Update property inference based on human's collected objects
         self._update_inference(observation)
 

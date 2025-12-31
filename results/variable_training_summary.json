@@ -2,10 +2,9 @@
   "config": {
     "grid_size": 10,
     "num_objects": 20,
-    "reward_ratio": 0.4,
+    "reward_ratio": 0.5,
     "num_rewarding_properties": 2,
-    "num_property_values": 5,
-    "num_train_episodes": 500000,
+    "num_train_episodes": 200000,
     "num_eval_episodes": 1000,
     "learning_rate": 0.00025,
     "buffer_size": 100000,
@@ -16,42 +15,41 @@
       128,
       128
     ],
-    "use_hierarchical": true,
-    "high_level_interval": 3,
     "num_seeds": 1,
-    "base_seed": 42
+    "base_seed": 42,
+    "training_mode": "variable"
   },
   "summary": {
     "1": {
-      "eval_mean": 2.101,
+      "eval_mean": 2.037,
       "eval_std": 0.0,
       "eval_sem": 0.0
     },
     "2": {
-      "eval_mean": 0.627,
+      "eval_mean": 0.729,
       "eval_std": 0.0,
       "eval_sem": 0.0
     },
     "3": {
-      "eval_mean": -0.098,
+      "eval_mean": 0.407,
       "eval_std": 0.0,
       "eval_sem": 0.0
     },
     "4": {
-      "eval_mean": -0.307,
+      "eval_mean": 0.248,
       "eval_std": 0.0,
       "eval_sem": 0.0
     },
     "5": {
-      "eval_mean": -0.791,
+      "eval_mean": 0.116,
       "eval_std": 0.0,
       "eval_sem": 0.0
     },
     "training": {
-      "train_mean": 0.08,
+      "train_mean": 0.83,
       "train_std": 0.0
     }
   },
-  "correlation": -0.9437237160884405,
-  "timestamp": "2025-12-30T21:49:27.441730"
+  "correlation": -0.8788936280669997,
+  "timestamp": "2025-12-29T12:41:52.787499"
 }
