@@ -1,0 +1,56 @@
+============================================================
+Gridworld Variable Property Training Experiment (Hierarchical)
+============================================================
+
+Configuration:
+  Policy type: Hierarchical
+  Grid size: 10x10
+  Number of objects: 20
+  Reward ratio: 0.4
+  Rewarding properties (K): 2
+  Property values per category: 5
+  Training episodes: 200000
+  Evaluation episodes: 1000
+  Learning rate: 0.00025
+  Buffer size: 100000
+  Batch size: 128
+  Target update freq: 100
+  Learning starts: 500
+  Hidden dims: [128, 128]
+  High-level interval (null goal): 3
+  Property counts to test: [1, 2, 3, 4, 5]
+  Number of seeds: 1
+  Base seed: 42
+
+============================================================
+Running variable property training experiment...
+============================================================
+Training: Agent sees all property counts during training
+Evaluation: Agent tested separately on each property count
+  0%|          | 0/1 [00:00<?, ?it/s]  0%|          | 0/1 [00:00<?, ?it/s]
+Traceback (most recent call last):
+  File "/Users/gliu2/Desktop/HAI/run_experiment.py", line 427, in <module>
+    main()
+  File "/Users/gliu2/Desktop/HAI/run_experiment.py", line 338, in main
+    results, trained_robot = run_variable_property_experiment(
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/gliu2/Desktop/HAI/gridworld/experiment.py", line 409, in run_variable_property_experiment
+    train_rewards = run_variable_training(
+                    ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/gliu2/Desktop/HAI/gridworld/experiment.py", line 259, in run_variable_training
+    result = run_episode(env, human, robot, training=True)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/gliu2/Desktop/HAI/gridworld/experiment.py", line 124, in run_episode
+    robot.update(
+  File "/Users/gliu2/Desktop/HAI/gridworld/agents/hierarchical_dqn_robot.py", line 688, in update
+    self._train_step()
+  File "/Users/gliu2/Desktop/HAI/gridworld/agents/hierarchical_dqn_robot.py", line 717, in _train_step
+    loss.backward()
+  File "/opt/anaconda3/envs/test_env/lib/python3.12/site-packages/torch/_tensor.py", line 625, in backward
+    torch.autograd.backward(
+  File "/opt/anaconda3/envs/test_env/lib/python3.12/site-packages/torch/autograd/__init__.py", line 354, in backward
+    _engine_run_backward(
+  File "/opt/anaconda3/envs/test_env/lib/python3.12/site-packages/torch/autograd/graph.py", line 841, in _engine_run_backward
+    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt
