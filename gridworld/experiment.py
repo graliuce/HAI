@@ -8,11 +8,12 @@ from .environment import GridWorld
 from .agents.human import HumanAgent
 from .agents.dqn_robot import DQNRobotAgent
 from .agents.hierarchical_dqn_robot import HierarchicalDQNRobotAgent
+from .agents.query_augmented_robot import QueryAugmentedRobotAgent
 from .objects import PROPERTY_CATEGORIES
 from tqdm import tqdm
 
 # Type alias for robot agents
-RobotAgent = Union[DQNRobotAgent, HierarchicalDQNRobotAgent]
+RobotAgent = Union[DQNRobotAgent, HierarchicalDQNRobotAgent, QueryAugmentedRobotAgent]
 
 
 @dataclass
@@ -23,20 +24,20 @@ class ExperimentConfig:
     grid_size: int = 10
     num_objects: int = 20
     reward_ratio: float = 0.4
-    num_rewarding_properties: int = 2  # K
-    num_property_values: int = 5  # Number of values per property category (1-5)
+    num_rewarding_properties: int = 2
+    num_property_values: int = 5
 
     # Training parameters
     num_train_episodes: int = 1000
     num_eval_episodes: int = 10
     max_steps_per_episode: int = 100
 
-    # DQN learning parameters (stable-baselines3 style)
+    # DQN learning parameters
     learning_rate: float = 1e-4
     discount_factor: float = 0.99
     epsilon_start: float = 1.0
     epsilon_end: float = 0.05
-    exploration_fraction: float = 0.1  # Fraction of total timesteps for epsilon decay
+    exploration_fraction: float = 0.1
 
     # DQN-specific parameters
     buffer_size: int = 100000
@@ -49,7 +50,14 @@ class ExperimentConfig:
 
     # Hierarchical policy parameters
     use_hierarchical: bool = False
-    high_level_interval: int = 3  # Steps between high-level decisions (only when goal is null)
+    high_level_interval: int = 3
+
+    # Query parameters (for test time)
+    allow_queries: bool = False
+    query_budget: int = 5
+    query_threshold: float = 0.3
+    blend_factor: float = 0.5
+    llm_model: str = "gpt-4o-mini"
 
     # Random seed
     seed: Optional[int] = None
@@ -65,6 +73,8 @@ class EpisodeResult:
     rewarding_collected_by_robot: int = 0
     total_steps: int = 0
     reward_properties: set = field(default_factory=set)
+    queries_used: int = 0
+    query_history: List[Dict] = field(default_factory=list)
 
 
 @dataclass
@@ -76,6 +86,9 @@ class VariableExperimentResult:
     eval_means_per_property: Dict[int, float] = field(default_factory=dict)
     eval_stds_per_property: Dict[int, float] = field(default_factory=dict)
     train_mean: float = 0.0
+    # Query statistics
+    eval_queries_per_property: Dict[int, List[int]] = field(default_factory=dict)
+    eval_avg_queries_per_property: Dict[int, float] = field(default_factory=dict)
 
 
 def run_episode(
@@ -90,7 +103,7 @@ def run_episode(
     Args:
         env: The GridWorld environment
         human: The human agent
-        robot: The DQN robot agent
+        robot: The robot agent (DQN, Hierarchical, or QueryAugmented)
         training: Whether to update robot's Q-values
 
     Returns:
@@ -106,6 +119,10 @@ def run_episode(
 
     robot.reset()
 
+    # If using query-augmented agent, set up human responder
+    if isinstance(robot, QueryAugmentedRobotAgent) and not training:
+        robot.set_human_responder(human_obs['reward_properties'])
+
     total_reward = 0.0
 
     while not env.done:
@@ -119,15 +136,25 @@ def run_episode(
         # Step environment with robot action
         next_observation, reward, done, info = env.step(robot_action)
 
-        # Update robot if training
-        if training:
-            robot.update(
-                action=robot_action,
-                reward=reward,
-                done=done,
-                observation=observation,
-                next_observation=next_observation
-            )
+        # Update robot if training (and not query-augmented, which doesn't train)
+        if training and hasattr(robot, 'update'):
+            # For QueryAugmentedRobotAgent, we update the base agent
+            if isinstance(robot, QueryAugmentedRobotAgent):
+                robot.base_agent.update(
+                    action=robot_action,
+                    reward=reward,
+                    done=done,
+                    observation=observation,
+                    next_observation=next_observation
+                )
+            else:
+                robot.update(
+                    action=robot_action,
+                    reward=reward,
+                    done=done,
+                    observation=observation,
+                    next_observation=next_observation
+                )
 
         total_reward += reward
         observation = next_observation
@@ -144,29 +171,23 @@ def run_episode(
         if obj.has_any_property(result.reward_properties):
             result.rewarding_collected_by_robot += 1
 
+    # Query statistics
+    if isinstance(robot, QueryAugmentedRobotAgent):
+        stats = robot.get_query_stats()
+        result.queries_used = stats['queries_used']
+        result.query_history = stats['query_history']
+
     return result
 
 
 def create_variable_robot_agent(
     config: ExperimentConfig,
     env: GridWorld,
-) -> RobotAgent:
+) -> Union[DQNRobotAgent, HierarchicalDQNRobotAgent]:
     """
     Create a robot agent that can handle all property counts.
-
-    This agent is trained with all 5 property categories so it can
-    generalize across different numbers of active properties.
-
-    Args:
-        config: Experiment configuration
-        env: The GridWorld environment
-
-    Returns:
-        Robot agent (flat DQN or hierarchical) with all categories active
     """
-    # Use ALL property categories so the agent can handle any property count
     all_categories = PROPERTY_CATEGORIES[:5]
-    # Calculate total timesteps for exploration schedule
     total_timesteps = config.num_train_episodes * config.max_steps_per_episode
 
     if config.use_hierarchical:
@@ -213,36 +234,57 @@ def create_variable_robot_agent(
         )
 
 
+def create_query_augmented_agent(
+    base_agent: HierarchicalDQNRobotAgent,
+    config: ExperimentConfig,
+    api_key: Optional[str] = None
+) -> QueryAugmentedRobotAgent:
+    """
+    Create a query-augmented agent wrapping the base agent.
+    
+    Args:
+        base_agent: Pre-trained hierarchical DQN agent
+        config: Experiment configuration
+        api_key: OpenAI API key (optional, can use env var)
+    
+    Returns:
+        QueryAugmentedRobotAgent
+    """
+    from .llm_interface import LLMInterface
+    
+    llm_interface = None
+    if config.allow_queries and api_key:
+        try:
+            llm_interface = LLMInterface(api_key=api_key, model=config.llm_model)
+        except Exception as e:
+            print(f"Warning: Could not initialize LLM interface: {e}")
+            print("Running without queries.")
+    
+    return QueryAugmentedRobotAgent(
+        base_agent=base_agent,
+        llm_interface=llm_interface,
+        query_budget=config.query_budget,
+        query_threshold=config.query_threshold,
+        blend_factor=config.blend_factor,
+        verbose=False
+    )
+
+
 def run_variable_training(
     config: ExperimentConfig,
-    robot: RobotAgent,
+    robot: Union[DQNRobotAgent, HierarchicalDQNRobotAgent],
     property_counts: List[int],
     verbose: bool = False
 ) -> List[float]:
     """
     Run training where property count varies each episode.
-
-    Each training episode randomly samples a property count from
-    the provided list, creating a curriculum that exposes the agent
-    to all difficulty levels.
-
-    Args:
-        config: Experiment configuration
-        robot: The DQN robot agent (must be initialized with all categories)
-        property_counts: List of property counts to sample from (e.g., [1,2,3,4,5])
-        verbose: Whether to print progress
-
-    Returns:
-        List of episode rewards
     """
     rewards = []
     rng = np.random.RandomState(config.seed)
 
     for episode in tqdm(range(config.num_train_episodes)):
-        # Randomly sample number of distinct properties for this episode
         num_props = rng.choice(property_counts)
 
-        # Create environment with sampled property count
         env = GridWorld(
             grid_size=config.grid_size,
             num_objects=config.num_objects,
@@ -250,16 +292,13 @@ def run_variable_training(
             num_rewarding_properties=config.num_rewarding_properties,
             num_distinct_properties=num_props,
             num_property_values=config.num_property_values,
-            seed=config.seed + episode  # Vary seed per episode
+            seed=config.seed + episode
         )
 
         human = HumanAgent()
-
-        # Run episode
         result = run_episode(env, human, robot, training=True)
         rewards.append(result.robot_reward)
 
-        # Decay exploration rate
         robot.decay_epsilon()
 
         if verbose and (episode + 1) % 100 == 0:
@@ -281,24 +320,20 @@ def run_evaluation_per_property_count(
 ) -> List[EpisodeResult]:
     """
     Run evaluation for a specific property count.
-
-    Args:
-        config: Experiment configuration
-        robot: The trained DQN robot agent
-        num_distinct_properties: Number of property categories to use
-        num_episodes: Number of evaluation episodes
-
-    Returns:
-        List of episode results
     """
     results = []
 
     # Store original epsilon and set to 0 for evaluation
-    original_epsilon = robot.epsilon
-    robot.epsilon = 0.0
+    if hasattr(robot, 'epsilon'):
+        original_epsilon = robot.epsilon
+        robot.epsilon = 0.0
+    elif hasattr(robot, 'base_agent'):
+        original_epsilon = robot.base_agent.epsilon
+        robot.base_agent.epsilon = 0.0
+    else:
+        original_epsilon = None
 
     for ep in range(num_episodes):
-        # Create environment with specific property count
         env = GridWorld(
             grid_size=config.grid_size,
             num_objects=config.num_objects,
@@ -306,7 +341,7 @@ def run_evaluation_per_property_count(
             num_rewarding_properties=config.num_rewarding_properties,
             num_distinct_properties=num_distinct_properties,
             num_property_values=config.num_property_values,
-            seed=config.seed + 10000 + ep  # Different seeds for eval
+            seed=config.seed + 10000 + ep
         )
 
         human = HumanAgent()
@@ -314,7 +349,11 @@ def run_evaluation_per_property_count(
         results.append(result)
 
     # Restore epsilon
-    robot.epsilon = original_epsilon
+    if original_epsilon is not None:
+        if hasattr(robot, 'epsilon'):
+            robot.epsilon = original_epsilon
+        elif hasattr(robot, 'base_agent'):
+            robot.base_agent.epsilon = original_epsilon
 
     return results
 
@@ -323,27 +362,21 @@ def run_variable_property_experiment(
     config: ExperimentConfig,
     property_counts: List[int] = None,
     num_seeds: int = 1,
-    verbose: bool = True
+    verbose: bool = True,
+    api_key: Optional[str] = None
 ) -> Tuple[List[VariableExperimentResult], RobotAgent]:
     """
     Run experiment with variable property training and per-property evaluation.
-
-    Training: Agent is trained with randomly varying property counts each episode.
-    Evaluation: Agent is evaluated separately on each specific property count.
-
-    This tests whether an agent trained on variable complexity can generalize
-    well to different difficulty levels.
-
+    
     Args:
-        config: Base experiment configuration
-        property_counts: List of property counts to use (default: [1,2,3,4,5])
-        num_seeds: Number of random seeds to average over
+        config: Experiment configuration
+        property_counts: List of property counts to use
+        num_seeds: Number of random seeds
         verbose: Whether to print progress
-
+        api_key: OpenAI API key for queries (optional)
+    
     Returns:
         Tuple of (results list, last trained robot)
-        - results: List of VariableExperimentResult (one per seed)
-        - robot: The last trained robot agent (for visualization)
     """
     if property_counts is None:
         property_counts = [1, 2, 3, 4, 5]
@@ -361,7 +394,6 @@ def run_variable_property_experiment(
             print(f"Seed {seed_idx + 1}/{num_seeds} (seed={seed})")
             print(f"{'#'*60}")
 
-        # Update config with current seed
         current_config = ExperimentConfig(
             grid_size=config.grid_size,
             num_objects=config.num_objects,
@@ -385,35 +417,53 @@ def run_variable_property_experiment(
             hidden_dims=config.hidden_dims,
             use_hierarchical=config.use_hierarchical,
             high_level_interval=config.high_level_interval,
+            allow_queries=config.allow_queries,
+            query_budget=config.query_budget,
+            query_threshold=config.query_threshold,
+            blend_factor=config.blend_factor,
+            llm_model=config.llm_model,
             seed=seed
         )
 
-        # Create environment (just for robot initialization)
         env = GridWorld(
             grid_size=current_config.grid_size,
             num_objects=current_config.num_objects,
             reward_ratio=current_config.reward_ratio,
             num_rewarding_properties=current_config.num_rewarding_properties,
-            num_distinct_properties=5,  # Max for initialization
+            num_distinct_properties=5,
             num_property_values=current_config.num_property_values,
             seed=seed
         )
 
-        # Create robot with ALL property categories
-        robot = create_variable_robot_agent(current_config, env)
+        # Create base robot (must be hierarchical for queries)
+        if current_config.allow_queries:
+            # Force hierarchical for query support
+            current_config.use_hierarchical = True
+        
+        base_robot = create_variable_robot_agent(current_config, env)
 
         if verbose:
             print("\nTraining with variable property counts...")
 
-        # Train with variable property counts
         train_rewards = run_variable_training(
             current_config,
-            robot,
+            base_robot,
             property_counts,
             verbose=verbose
         )
 
-        # Evaluate on each property count separately
+        # Wrap with query augmentation if enabled
+        if current_config.allow_queries and isinstance(base_robot, HierarchicalDQNRobotAgent):
+            eval_robot = create_query_augmented_agent(base_robot, current_config, api_key)
+            if verbose:
+                print(f"\nQuery augmentation enabled:")
+                print(f"  Budget: {current_config.query_budget}")
+                print(f"  Threshold: {current_config.query_threshold}")
+                print(f"  Blend factor: {current_config.blend_factor}")
+        else:
+            eval_robot = base_robot
+
+        # Evaluate
         result = VariableExperimentResult(
             train_rewards=train_rewards,
             train_mean=np.mean(train_rewards[-100:])
@@ -425,23 +475,29 @@ def run_variable_property_experiment(
         for num_props in property_counts:
             eval_results = run_evaluation_per_property_count(
                 current_config,
-                robot,
+                eval_robot,
                 num_props,
                 current_config.num_eval_episodes
             )
 
             eval_rewards = [r.robot_reward for r in eval_results]
+            eval_queries = [r.queries_used for r in eval_results]
+            
             result.eval_results_per_property[num_props] = eval_rewards
             result.eval_means_per_property[num_props] = np.mean(eval_rewards)
             result.eval_stds_per_property[num_props] = np.std(eval_rewards)
+            result.eval_queries_per_property[num_props] = eval_queries
+            result.eval_avg_queries_per_property[num_props] = np.mean(eval_queries)
 
             if verbose:
+                query_info = f", avg queries={result.eval_avg_queries_per_property[num_props]:.2f}" if current_config.allow_queries else ""
                 print(f"  {num_props} properties: "
                       f"mean={result.eval_means_per_property[num_props]:.2f}, "
-                      f"std={result.eval_stds_per_property[num_props]:.2f}")
+                      f"std={result.eval_stds_per_property[num_props]:.2f}"
+                      f"{query_info}")
 
         all_results.append(result)
-        trained_robot = robot
+        trained_robot = eval_robot
 
     return all_results, trained_robot
 
@@ -450,29 +506,20 @@ def summarize_variable_results(
     results: List[VariableExperimentResult],
     property_counts: List[int]
 ) -> Dict[int, Dict[str, float]]:
-    """
-    Summarize variable property experiment results.
-
-    Args:
-        results: List of VariableExperimentResult from each seed
-        property_counts: List of property counts that were tested
-
-    Returns:
-        Summary statistics for each property count
-    """
+    """Summarize variable property experiment results."""
     summary = {}
 
     for num_props in property_counts:
-        # Gather eval means across all seeds
         eval_means = [r.eval_means_per_property[num_props] for r in results]
+        avg_queries = [r.eval_avg_queries_per_property.get(num_props, 0) for r in results]
 
         summary[num_props] = {
             'eval_mean': np.mean(eval_means),
             'eval_std': np.std(eval_means),
             'eval_sem': np.std(eval_means) / np.sqrt(len(eval_means)) if len(eval_means) > 1 else 0.0,
+            'avg_queries': np.mean(avg_queries),
         }
 
-    # Also compute overall training mean
     train_means = [r.train_mean for r in results]
     summary['training'] = {
         'train_mean': np.mean(train_means),
@@ -490,28 +537,20 @@ def render_episode_gif(
     fps: int = 4,
     trained_robot: Optional[RobotAgent] = None
 ) -> None:
-    """
-    Render and save a GIF of an entire episode for visualization.
-
-    Args:
-        num_distinct_properties: Number of property categories to vary (1-5)
-        config: Experiment configuration
-        output_path: Path to save the GIF
-        max_steps: Maximum number of steps to render
-        fps: Frames per second for the GIF
-        trained_robot: Pre-trained robot agent (required)
-    """
+    """Render and save a GIF of an entire episode."""
     import imageio
 
     if trained_robot is None:
         raise ValueError("Missing trained robot agent.")
 
-    robot = trained_robot
+    # Get base robot for rendering
+    if isinstance(trained_robot, QueryAugmentedRobotAgent):
+        robot = trained_robot
+    else:
+        robot = trained_robot
 
-    # Seed numpy's RNG with a truly random value for different episodes each run
     np.random.seed(None)
 
-    # Create environment for visualization with a random seed
     vis_env = GridWorld(
         grid_size=config.grid_size,
         num_objects=config.num_objects,
@@ -522,45 +561,47 @@ def render_episode_gif(
         seed=np.random.randint(0, 1000000)
     )
 
-    # Create human agent for visualization
     human = HumanAgent()
 
-    # Set robot to evaluation mode (no exploration)
-    original_epsilon = robot.epsilon
-    robot.epsilon = 0.0
+    # Set evaluation mode
+    if hasattr(robot, 'epsilon'):
+        original_epsilon = robot.epsilon
+        robot.epsilon = 0.0
+    elif hasattr(robot, 'base_agent'):
+        original_epsilon = robot.base_agent.epsilon
+        robot.base_agent.epsilon = 0.0
+    else:
+        original_epsilon = None
 
-    # Reset environment
     observation = vis_env.reset()
     human_obs = vis_env.get_human_observation()
     human.reset(human_obs['reward_properties'])
     robot.reset()
 
-    # Collect frames
-    frames = []
+    # Set up human responder for query-augmented agent
+    if isinstance(robot, QueryAugmentedRobotAgent):
+        robot.set_human_responder(human_obs['reward_properties'])
 
-    # Capture initial frame
+    frames = []
     frames.append(vis_env.render_to_array())
 
     step = 0
-
     while not vis_env.done and step < max_steps:
-        # Get actions
         human_action = human.get_action(human_obs)
         robot_action = robot.get_action(observation, training=False)
 
-        # Execute human action first
         vis_env.human_position = vis_env._apply_action(vis_env.human_position, human_action)
-
-        # Step environment with robot action
         observation, _, _, _ = vis_env.step(robot_action)
         human_obs = vis_env.get_human_observation()
 
-        # Capture frame
         frames.append(vis_env.render_to_array())
         step += 1
 
     # Restore epsilon
-    robot.epsilon = original_epsilon
+    if original_epsilon is not None:
+        if hasattr(robot, 'epsilon'):
+            robot.epsilon = original_epsilon
+        elif hasattr(robot, 'base_agent'):
+            robot.base_agent.epsilon = original_epsilon
 
-    # Save as GIF
     imageio.mimsave(output_path, frames, fps=fps, loop=0)
