@@ -13,9 +13,9 @@
       128
     ],
     "use_hierarchical": true,
-    "allow_queries": false,
+    "allow_queries": true,
     "query_budget": 5,
-    "query_threshold": 0.3,
+    "query_threshold": 0.5,
     "blend_factor": 0.5,
     "llm_model": "gpt-4o-mini",
     "num_seeds": 1,
@@ -23,40 +23,40 @@
   },
   "summary": {
     "1": {
-      "eval_mean": 1.9,
+      "eval_mean": 0.5,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 0.0
+      "avg_queries": 1.8
     },
     "2": {
-      "eval_mean": 1.0,
+      "eval_mean": 0.7,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 0.0
+      "avg_queries": 2.0
     },
     "3": {
-      "eval_mean": 0.8,
+      "eval_mean": 0.5,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 0.0
+      "avg_queries": 2.0
     },
     "4": {
-      "eval_mean": -1.3,
+      "eval_mean": 0.2,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 0.0
+      "avg_queries": 1.8
     },
     "5": {
-      "eval_mean": -1.4,
+      "eval_mean": 0.3,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 0.0
+      "avg_queries": 2.0
     },
     "training": {
       "train_mean": 0.03,
       "train_std": 0.0
     }
   },
-  "correlation": -0.9541801560056373,
-  "timestamp": "2026-01-03T11:49:51.380729"
+  "correlation": -0.7299963950884315,
+  "timestamp": "2026-01-03T12:19:54.685954"
 }
