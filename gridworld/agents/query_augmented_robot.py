@@ -54,13 +54,13 @@ class PreferenceBeliefs:
                 self.confidence[prop_value] = new_conf
     
     def update_from_query(
-        self, 
+        self,
         property_weights: Dict[str, float],
         query_confidence: float = 2.0
     ):
         """
         Update beliefs from LLM-interpreted query response.
-        
+
         Args:
             property_weights: Property value -> weight from LLM interpretation
                              Positive = human values this (robot should collect too)
@@ -68,9 +68,11 @@ class PreferenceBeliefs:
             query_confidence: How much to weight query info
         """
         self.has_queries = True
-        
+
         for prop_value, weight in property_weights.items():
-            if prop_value in self.values:
+            # Only update confidence for properties where we learned something
+            # (non-zero weight means the LLM provided actual information)
+            if prop_value in self.values and weight != 0.0:
                 old_conf = self.confidence[prop_value]
                 new_conf = old_conf + query_confidence
                 self.values[prop_value] = (
@@ -193,30 +195,45 @@ class QueryAugmentedRobotAgent:
     
     def _should_query(self, observation: dict) -> bool:
         """
-        Decide whether to query based on overall uncertainty.
-        
+        Decide whether to query based on uncertainty about properties on the board.
+
         Returns:
             True if should query, False otherwise
         """
         if self.llm is None:
             return False
-        
+
         if self.queries_used >= self.query_budget:
             return False
-        
+
         objects = observation.get('objects', {})
         if len(objects) == 0:
             return False
-        
-        # Calculate average confidence across all properties
-        avg_confidence = np.mean(list(self.beliefs.confidence.values()))
-        
-        # Query if we're generally uncertain
+
+        # Get unique property values currently on the board
+        board_properties = set()
+        for obj_data in objects.values():
+            for prop_value in obj_data['properties'].values():
+                if prop_value in self.beliefs.confidence:
+                    board_properties.add(prop_value)
+
+        if len(board_properties) == 0:
+            return False
+
+        # Calculate average confidence only for properties on the board
+        # This ensures uncertainty scales with the number of distinct properties
+        board_confidences = [
+            self.beliefs.confidence[prop] for prop in board_properties
+        ]
+        avg_confidence = np.mean(board_confidences)
+
+        # Query if we're uncertain about properties currently on the board
         should_query = avg_confidence < self.confidence_threshold
-        
+
         if self.verbose and should_query:
-            print(f"[Query] Triggering query: avg_confidence={avg_confidence:.3f}")
-        
+            print(f"[Query] Triggering query: avg_confidence={avg_confidence:.3f} "
+                  f"(over {len(board_properties)} board properties)")
+
         return should_query
     
     def _execute_query(self, observation: dict) -> Dict[str, float]:
