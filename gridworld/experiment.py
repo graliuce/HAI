@@ -55,7 +55,7 @@ class ExperimentConfig:
     # Query parameters (for test time)
     allow_queries: bool = False
     query_budget: int = 5
-    query_threshold: float = 0.5
+    query_threshold: float = 0.8
     blend_factor: float = 0.5
     llm_model: str = "gpt-4o-mini"
 

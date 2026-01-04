@@ -115,7 +115,7 @@ class QueryAugmentedRobotAgent:
         llm_interface: Optional[LLMInterface] = None,
         query_budget: int = 5,
         blend_factor: float = 0.5,
-        query_threshold: float = 0.5,
+        query_threshold: float = 0.8,
         verbose: bool = False
     ):
         """
@@ -124,9 +124,9 @@ class QueryAugmentedRobotAgent:
             llm_interface: Interface to LLM (None = no queries, just blending)
             query_budget: Maximum queries per episode
             blend_factor: Blend weight for beliefs vs Q-values (0=Q, 1=beliefs)
-            query_threshold: Relative threshold for querying (0 to 1).
-                            Query if max_q < query_threshold * max_q_observed.
-                            E.g., 0.5 = query when best Q is less than 50% of best seen.
+            query_threshold: Normalized entropy threshold for querying (0 to 1).
+                            Query if entropy > threshold * max_entropy.
+                            E.g., 0.8 = query when entropy is > 80% of max (high uncertainty).
             verbose: Print debug information
         """
         self.base_agent = base_agent
@@ -148,9 +148,6 @@ class QueryAugmentedRobotAgent:
         self.queries_used = 0
         self.query_history: List[Dict] = []
         self.observed_object_ids: Set[int] = set()
-
-        # Track max Q-value observed (persists across episodes for relative threshold)
-        self.max_q_observed: Optional[float] = None
 
         # Human responder (set during episode)
         self.human_responder: Optional[SimulatedHumanResponder] = None
@@ -197,10 +194,10 @@ class QueryAugmentedRobotAgent:
     
     def _should_query(self, observation: dict) -> bool:
         """
-        Decide whether to query based on relative max Q-value.
+        Decide whether to query based on entropy of Q-value distribution.
 
-        Query if the robot doesn't have a good action (max Q-value is low
-        relative to the best Q-value ever observed).
+        High entropy = Q-values are similar = robot is uncertain = should query.
+        Low entropy = one action dominates = robot is confident = don't query.
 
         Returns:
             True if should query, False otherwise
@@ -216,7 +213,8 @@ class QueryAugmentedRobotAgent:
             return False
 
         valid_actions = self.base_agent._get_valid_property_actions(observation)
-        if len(valid_actions) == 0:
+        if len(valid_actions) < 2:
+            # Need at least 2 actions to have meaningful entropy
             return False
 
         # Get Q-values from base agent
@@ -228,27 +226,30 @@ class QueryAugmentedRobotAgent:
             q_values = self.base_agent.high_level_q_network(state_tensor)
             q_values = q_values.cpu().numpy()[0]
 
-        # Get max Q-value among valid actions
+        # Get Q-values for valid actions
         valid_q = q_values[valid_actions]
-        max_q = float(valid_q.max())
 
-        # Update max Q observed (for relative threshold calculation)
-        if self.max_q_observed is None or max_q > self.max_q_observed:
-            self.max_q_observed = max_q
+        # Convert to probability distribution via softmax
+        q_max = valid_q.max()
+        probs = np.exp(valid_q - q_max)
+        probs = probs / (probs.sum() + 1e-8)
 
-        # First decision point: always query since we have no reference yet
-        # (This only happens on the very first episode)
-        if self.max_q_observed == max_q and self.queries_used == 0:
-            # This is likely our first observation, query to establish baseline
-            should_query = True
-        else:
-            # Query if max Q is below threshold fraction of best observed
-            relative_threshold = self.query_threshold * self.max_q_observed
-            should_query = max_q < relative_threshold
+        # Calculate entropy: H = -sum(p * log(p))
+        # Add small epsilon to avoid log(0)
+        entropy = -np.sum(probs * np.log(probs + 1e-10))
+
+        # Maximum possible entropy for this number of actions (uniform distribution)
+        max_entropy = np.log(len(valid_actions))
+
+        # Normalized entropy (0 = one action dominates, 1 = uniform)
+        normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0
+
+        # Query if normalized entropy exceeds threshold (high uncertainty)
+        should_query = normalized_entropy > self.query_threshold
 
         if self.verbose:
-            print(f"[Query] max_q={max_q:.4f}, max_q_observed={self.max_q_observed:.4f}, "
-                  f"relative_threshold={self.query_threshold * self.max_q_observed:.4f}, "
+            print(f"[Query] entropy={entropy:.4f}, max_entropy={max_entropy:.4f}, "
+                  f"normalized={normalized_entropy:.4f}, threshold={self.query_threshold:.4f}, "
                   f"should_query={should_query}")
 
         return should_query

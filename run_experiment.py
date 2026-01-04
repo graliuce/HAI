@@ -125,8 +125,8 @@ def parse_args():
         help="Maximum queries per episode (default: 5)"
     )
     parser.add_argument(
-        "--query-threshold", type=float, default=0.5,
-        help="Relative threshold (0-1) for querying - query when max Q < threshold * max_Q_observed (default: 0.5)"
+        "--query-threshold", type=float, default=0.8,
+        help="Entropy threshold (0-1) for querying - query when normalized entropy > threshold (default: 0.8)"
     )
     parser.add_argument(
         "--blend-factor", type=float, default=0.5,
