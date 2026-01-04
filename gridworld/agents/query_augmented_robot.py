@@ -114,7 +114,6 @@ class QueryAugmentedRobotAgent:
         base_agent: HierarchicalDQNRobotAgent,
         llm_interface: Optional[LLMInterface] = None,
         query_budget: int = 5,
-        query_threshold: float = 0.3,
         blend_factor: float = 0.5,
         confidence_threshold: float = 3.0,
         verbose: bool = False
@@ -124,15 +123,14 @@ class QueryAugmentedRobotAgent:
             base_agent: Pre-trained hierarchical DQN agent
             llm_interface: Interface to LLM (None = no queries, just blending)
             query_budget: Maximum queries per episode
-            query_threshold: Score gap threshold for triggering queries
             blend_factor: Base blend weight for beliefs vs Q-values (0=Q, 1=beliefs)
-            confidence_threshold: Confidence level for full belief trust
+            confidence_threshold: Avg confidence threshold for querying - query when
+                                  avg confidence over board properties is below this
             verbose: Print debug information
         """
         self.base_agent = base_agent
         self.llm = llm_interface
         self.query_budget = query_budget
-        self.query_threshold = query_threshold
         self.blend_factor = blend_factor
         self.confidence_threshold = confidence_threshold
         self.verbose = verbose

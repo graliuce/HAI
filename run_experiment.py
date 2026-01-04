@@ -125,8 +125,8 @@ def parse_args():
         help="Maximum queries per episode (default: 5)"
     )
     parser.add_argument(
-        "--query-threshold", type=float, default=0.3,
-        help="Score gap threshold for triggering queries (default: 0.3)"
+        "--confidence-threshold", type=float, default=3.0,
+        help="Confidence threshold for querying - query when avg confidence is below this (default: 3.0)"
     )
     parser.add_argument(
         "--blend-factor", type=float, default=0.5,
@@ -337,7 +337,7 @@ def main():
         high_level_interval=args.high_level_interval,
         allow_queries=args.allow_queries,
         query_budget=args.query_budget,
-        query_threshold=args.query_threshold,
+        confidence_threshold=args.confidence_threshold,
         blend_factor=args.blend_factor,
         llm_model=args.llm_model,
         seed=args.seed
@@ -367,7 +367,7 @@ def main():
     print(f"  Queries: {query_status}")
     if config.allow_queries:
         print(f"  Query budget: {config.query_budget}")
-        print(f"  Query threshold: {config.query_threshold}")
+        print(f"  Confidence threshold: {config.confidence_threshold}")
         print(f"  Blend factor: {config.blend_factor}")
         print(f"  LLM model: {config.llm_model}")
 
@@ -443,7 +443,7 @@ def main():
         'use_hierarchical': config.use_hierarchical,
         'allow_queries': config.allow_queries,
         'query_budget': config.query_budget,
-        'query_threshold': config.query_threshold,
+        'confidence_threshold': config.confidence_threshold,
         'blend_factor': config.blend_factor,
         'llm_model': config.llm_model,
         'num_seeds': args.num_seeds,

@@ -55,7 +55,7 @@ class ExperimentConfig:
     # Query parameters (for test time)
     allow_queries: bool = False
     query_budget: int = 5
-    query_threshold: float = 0.3
+    confidence_threshold: float = 3.0
     blend_factor: float = 0.5
     llm_model: str = "gpt-4o-mini"
 
@@ -264,8 +264,8 @@ def create_query_augmented_agent(
         base_agent=base_agent,
         llm_interface=llm_interface,
         query_budget=config.query_budget,
-        query_threshold=config.query_threshold,
         blend_factor=config.blend_factor,
+        confidence_threshold=config.confidence_threshold,
         verbose=False
     )
 
@@ -419,7 +419,7 @@ def run_variable_property_experiment(
             high_level_interval=config.high_level_interval,
             allow_queries=config.allow_queries,
             query_budget=config.query_budget,
-            query_threshold=config.query_threshold,
+            confidence_threshold=config.confidence_threshold,
             blend_factor=config.blend_factor,
             llm_model=config.llm_model,
             seed=seed
@@ -458,7 +458,7 @@ def run_variable_property_experiment(
             if verbose:
                 print(f"\nQuery augmentation enabled:")
                 print(f"  Budget: {current_config.query_budget}")
-                print(f"  Threshold: {current_config.query_threshold}")
+                print(f"  Confidence threshold: {current_config.confidence_threshold}")
                 print(f"  Blend factor: {current_config.blend_factor}")
         else:
             eval_robot = base_robot
