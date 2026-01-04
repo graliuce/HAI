@@ -126,7 +126,7 @@ def parse_args():
     )
     parser.add_argument(
         "--query-threshold", type=float, default=0.5,
-        help="Max Q-value threshold for querying - query when best Q-value is below this (default: 0.5)"
+        help="Relative threshold (0-1) for querying - query when max Q < threshold * max_Q_observed (default: 0.5)"
     )
     parser.add_argument(
         "--blend-factor", type=float, default=0.5,

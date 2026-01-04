@@ -124,8 +124,9 @@ class QueryAugmentedRobotAgent:
             llm_interface: Interface to LLM (None = no queries, just blending)
             query_budget: Maximum queries per episode
             blend_factor: Blend weight for beliefs vs Q-values (0=Q, 1=beliefs)
-            query_threshold: Max Q-value threshold - query if best Q-value is below this
-                            (low max Q = robot doesn't know any good action)
+            query_threshold: Relative threshold for querying (0 to 1).
+                            Query if max_q < query_threshold * max_q_observed.
+                            E.g., 0.5 = query when best Q is less than 50% of best seen.
             verbose: Print debug information
         """
         self.base_agent = base_agent
@@ -134,23 +135,26 @@ class QueryAugmentedRobotAgent:
         self.blend_factor = blend_factor
         self.query_threshold = query_threshold
         self.verbose = verbose
-        
+
         # Get property values from base agent
         self.property_values = base_agent.property_values
         self.active_categories = base_agent.active_categories
-        
+
         # Initialize beliefs
         self.beliefs = PreferenceBeliefs()
         self.beliefs.initialize(self.property_values)
-        
+
         # Query tracking
         self.queries_used = 0
         self.query_history: List[Dict] = []
         self.observed_object_ids: Set[int] = set()
-        
+
+        # Track max Q-value observed (persists across episodes for relative threshold)
+        self.max_q_observed: Optional[float] = None
+
         # Human responder (set during episode)
         self.human_responder: Optional[SimulatedHumanResponder] = None
-        
+
         # Episode state
         self.has_started = False
     
@@ -193,11 +197,10 @@ class QueryAugmentedRobotAgent:
     
     def _should_query(self, observation: dict) -> bool:
         """
-        Decide whether to query based on max Q-value.
+        Decide whether to query based on relative max Q-value.
 
-        Query if the robot doesn't have a good action (max Q-value is low).
-        This captures "I don't know any good action" rather than just
-        "I'm unsure between actions".
+        Query if the robot doesn't have a good action (max Q-value is low
+        relative to the best Q-value ever observed).
 
         Returns:
             True if should query, False otherwise
@@ -227,13 +230,25 @@ class QueryAugmentedRobotAgent:
 
         # Get max Q-value among valid actions
         valid_q = q_values[valid_actions]
-        max_q = valid_q.max()
+        max_q = float(valid_q.max())
 
-        # Query if max Q-value is low (robot doesn't know any good action)
-        should_query = max_q < self.query_threshold
+        # Update max Q observed (for relative threshold calculation)
+        if self.max_q_observed is None or max_q > self.max_q_observed:
+            self.max_q_observed = max_q
+
+        # First decision point: always query since we have no reference yet
+        # (This only happens on the very first episode)
+        if self.max_q_observed == max_q and self.queries_used == 0:
+            # This is likely our first observation, query to establish baseline
+            should_query = True
+        else:
+            # Query if max Q is below threshold fraction of best observed
+            relative_threshold = self.query_threshold * self.max_q_observed
+            should_query = max_q < relative_threshold
 
         if self.verbose:
-            print(f"[Query] max_q={max_q:.4f}, threshold={self.query_threshold:.4f}, "
+            print(f"[Query] max_q={max_q:.4f}, max_q_observed={self.max_q_observed:.4f}, "
+                  f"relative_threshold={self.query_threshold * self.max_q_observed:.4f}, "
                   f"should_query={should_query}")
 
         return should_query
