@@ -115,7 +115,7 @@ class QueryAugmentedRobotAgent:
         llm_interface: Optional[LLMInterface] = None,
         query_budget: int = 5,
         blend_factor: float = 0.5,
-        confidence_threshold: float = 3.0,
+        query_threshold: float = 0.5,
         verbose: bool = False
     ):
         """
@@ -123,16 +123,16 @@ class QueryAugmentedRobotAgent:
             base_agent: Pre-trained hierarchical DQN agent
             llm_interface: Interface to LLM (None = no queries, just blending)
             query_budget: Maximum queries per episode
-            blend_factor: Base blend weight for beliefs vs Q-values (0=Q, 1=beliefs)
-            confidence_threshold: Avg confidence threshold for querying - query when
-                                  avg confidence over board properties is below this
+            blend_factor: Blend weight for beliefs vs Q-values (0=Q, 1=beliefs)
+            query_threshold: Max Q-value threshold - query if best Q-value is below this
+                            (low max Q = robot doesn't know any good action)
             verbose: Print debug information
         """
         self.base_agent = base_agent
         self.llm = llm_interface
         self.query_budget = query_budget
         self.blend_factor = blend_factor
-        self.confidence_threshold = confidence_threshold
+        self.query_threshold = query_threshold
         self.verbose = verbose
         
         # Get property values from base agent
@@ -193,7 +193,11 @@ class QueryAugmentedRobotAgent:
     
     def _should_query(self, observation: dict) -> bool:
         """
-        Decide whether to query based on uncertainty about properties on the board.
+        Decide whether to query based on max Q-value.
+
+        Query if the robot doesn't have a good action (max Q-value is low).
+        This captures "I don't know any good action" rather than just
+        "I'm unsure between actions".
 
         Returns:
             True if should query, False otherwise
@@ -208,29 +212,29 @@ class QueryAugmentedRobotAgent:
         if len(objects) == 0:
             return False
 
-        # Get unique property values currently on the board
-        board_properties = set()
-        for obj_data in objects.values():
-            for prop_value in obj_data['properties'].values():
-                if prop_value in self.beliefs.confidence:
-                    board_properties.add(prop_value)
-
-        if len(board_properties) == 0:
+        valid_actions = self.base_agent._get_valid_property_actions(observation)
+        if len(valid_actions) == 0:
             return False
 
-        # Calculate average confidence only for properties on the board
-        # This ensures uncertainty scales with the number of distinct properties
-        board_confidences = [
-            self.beliefs.confidence[prop] for prop in board_properties
-        ]
-        avg_confidence = np.mean(board_confidences)
+        # Get Q-values from base agent
+        high_level_input = self.base_agent._encode_high_level_input(observation)
 
-        # Query if we're uncertain about properties currently on the board
-        should_query = avg_confidence < self.confidence_threshold
+        with torch.no_grad():
+            state_tensor = torch.FloatTensor(high_level_input).unsqueeze(0)
+            state_tensor = state_tensor.to(self.base_agent.device)
+            q_values = self.base_agent.high_level_q_network(state_tensor)
+            q_values = q_values.cpu().numpy()[0]
 
-        if self.verbose and should_query:
-            print(f"[Query] Triggering query: avg_confidence={avg_confidence:.3f} "
-                  f"(over {len(board_properties)} board properties)")
+        # Get max Q-value among valid actions
+        valid_q = q_values[valid_actions]
+        max_q = valid_q.max()
+
+        # Query if max Q-value is low (robot doesn't know any good action)
+        should_query = max_q < self.query_threshold
+
+        if self.verbose:
+            print(f"[Query] max_q={max_q:.4f}, threshold={self.query_threshold:.4f}, "
+                  f"should_query={should_query}")
 
         return should_query
     
@@ -305,77 +309,62 @@ class QueryAugmentedRobotAgent:
     def _compute_blended_action(self, observation: dict) -> int:
         """
         Compute action blending Q-values with preference beliefs.
-        
+
         Returns:
             Action index (property action)
         """
         valid_actions = self.base_agent._get_valid_property_actions(observation)
-        
+
         if not valid_actions:
             return 0
-        
+
         # Get Q-values from base agent
         high_level_input = self.base_agent._encode_high_level_input(observation)
-        
+
         with torch.no_grad():
             state_tensor = torch.FloatTensor(high_level_input).unsqueeze(0)
             state_tensor = state_tensor.to(self.base_agent.device)
             q_values = self.base_agent.high_level_q_network(state_tensor)
             q_values = q_values.cpu().numpy()[0]
-        
+
         # Get belief scores for each property action
         # Robot should target properties human likes (positive values in beliefs)
         belief_scores = np.array([
             self.beliefs.values.get(self.base_agent.property_values[a], 0.0)
             for a in range(len(self.base_agent.property_values))
         ])
-        
-        # Compute adaptive blend factor based on confidence
-        confidences = np.array([
-            self.beliefs.confidence.get(self.base_agent.property_values[a], 0.0)
-            for a in range(len(self.base_agent.property_values))
-        ])
-        
-        # Only blend if we have some confidence (from queries or observations)
-        avg_confidence = confidences[valid_actions].mean() if len(valid_actions) > 0 else 0
-        
-        if avg_confidence > 0:
-            # Adaptive: trust beliefs more when confident
-            adaptive_blend = min(
-                self.blend_factor * (avg_confidence / self.confidence_threshold),
-                0.9
-            )
-        else:
-            # No confidence yet - just use Q-values
-            adaptive_blend = 0.0
-        
+
         # Convert to probabilities for valid actions
         valid_q = q_values[valid_actions]
         valid_beliefs = belief_scores[valid_actions]
-        
+
         # Softmax for Q-values
         q_max = valid_q.max()
         q_probs = np.exp(valid_q - q_max)
         q_probs = q_probs / (q_probs.sum() + 1e-8)
-        
-        # Softmax for belief scores
-        if valid_beliefs.std() > 1e-8:
+
+        # Check if we have any belief signal
+        has_beliefs = np.abs(valid_beliefs).sum() > 1e-8
+
+        if has_beliefs and valid_beliefs.std() > 1e-8:
+            # Softmax for belief scores
             b_max = valid_beliefs.max()
             belief_probs = np.exp(valid_beliefs - b_max)
             belief_probs = belief_probs / (belief_probs.sum() + 1e-8)
+
+            # Blend Q-probs with belief-probs
+            blended = (1 - self.blend_factor) * q_probs + self.blend_factor * belief_probs
         else:
-            # Uniform if no differentiation
-            belief_probs = np.ones_like(valid_beliefs) / len(valid_beliefs)
-        
-        # Blend
-        blended = (1 - adaptive_blend) * q_probs + adaptive_blend * belief_probs
-        
+            # No belief signal - just use Q-values
+            blended = q_probs
+
         if self.verbose:
-            print(f"[Blend] adaptive_blend={adaptive_blend:.3f}")
+            print(f"[Blend] blend_factor={self.blend_factor:.3f}, has_beliefs={has_beliefs}")
             print(f"  Q-probs: {dict(zip(valid_actions, q_probs))}")
-            print(f"  Belief-probs: {dict(zip(valid_actions, belief_probs))}")
+            if has_beliefs:
+                print(f"  Belief-probs: {dict(zip(valid_actions, belief_probs))}")
             print(f"  Blended: {dict(zip(valid_actions, blended))}")
-        
+
         # Select best valid action
         best_valid_idx = np.argmax(blended)
         return valid_actions[best_valid_idx]
