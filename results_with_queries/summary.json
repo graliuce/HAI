@@ -1,12 +1,12 @@
 {
   "config": {
     "grid_size": 10,
-    "num_objects": 20,
+    "num_objects": 30,
     "reward_ratio": 0.4,
     "num_rewarding_properties": 2,
     "num_property_values": 5,
     "num_train_episodes": 100000,
-    "num_eval_episodes": 10,
+    "num_eval_episodes": 100,
     "learning_rate": 0.00025,
     "hidden_dims": [
       128,
@@ -15,7 +15,7 @@
     "use_hierarchical": true,
     "allow_queries": true,
     "query_budget": 5,
-    "query_threshold": 0.5,
+    "query_threshold": 2.0,
     "blend_factor": 0.5,
     "llm_model": "gpt-4o-mini",
     "num_seeds": 1,
@@ -23,40 +23,40 @@
   },
   "summary": {
     "1": {
-      "eval_mean": 0.5,
+      "eval_mean": 3.12,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 1.8
+      "avg_queries": 0.25
     },
     "2": {
-      "eval_mean": 0.7,
+      "eval_mean": 2.09,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 2.0
+      "avg_queries": 0.99
     },
     "3": {
-      "eval_mean": 0.5,
+      "eval_mean": 1.45,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 2.0
+      "avg_queries": 1.59
     },
     "4": {
-      "eval_mean": 0.2,
+      "eval_mean": 1.69,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 1.8
+      "avg_queries": 1.66
     },
     "5": {
-      "eval_mean": 0.3,
+      "eval_mean": 0.98,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 2.0
+      "avg_queries": 2.23
     },
     "training": {
-      "train_mean": 0.03,
+      "train_mean": 0.0,
       "train_std": 0.0
     }
   },
-  "correlation": -0.7299963950884315,
-  "timestamp": "2026-01-03T12:19:54.685954"
+  "correlation": -0.9157618468565156,
+  "timestamp": "2026-01-06T12:59:54.718811"
 }
