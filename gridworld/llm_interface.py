@@ -28,15 +28,6 @@ class LLMInterface:
     
     def _call_llm(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
         """Call OpenAI API."""
-        # Print the prompt
-        print("\n" + "="*80)
-        print("LLM CALL")
-        print("="*80)
-        for i, msg in enumerate(messages):
-            print(f"\n[{msg['role'].upper()}]:")
-            print(msg['content'])
-        print("\n" + "-"*80)
-        
         try:
             from openai import OpenAI
             client = OpenAI(api_key=self.api_key)
@@ -48,12 +39,6 @@ class LLMInterface:
             )
             
             response_text = response.choices[0].message.content
-            
-            # Print the response
-            print("[RESPONSE]:")
-            print(response_text)
-            print("="*80 + "\n")
-            
             return response_text
             
         except ImportError:
@@ -81,12 +66,6 @@ class LLMInterface:
                 raise Exception(f"OpenAI API error: {response.status_code}, {response.text}")
             
             response_text = response.json()['choices'][0]['message']['content']
-            
-            # Print the response
-            print("[RESPONSE]:")
-            print(response_text)
-            print("="*80 + "\n")
-            
             return response_text
     
     def generate_query(
@@ -264,7 +243,7 @@ Current context:
 Question from the robot: "{query}"
 
 Generate a natural, helpful response (1-3 sentences) that answers the question. Do not provide information that is not directly asked for in the question.
-Keep your response conversational and human-like.
+Do not mention any preferences that are not in your list of true preferences.
 
 Output only your response, nothing else."""
 

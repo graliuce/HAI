@@ -125,8 +125,8 @@ def parse_args():
         help="Maximum queries per episode (default: 5)"
     )
     parser.add_argument(
-        "--query-threshold", type=float, default=0.3,
-        help="Score gap threshold for triggering queries (default: 0.3)"
+        "--query-threshold", type=float, default=0.9,
+        help="Competitive options threshold for querying - query when num_competitive > threshold (default: 0.9)"
     )
     parser.add_argument(
         "--blend-factor", type=float, default=0.5,
@@ -155,6 +155,10 @@ def parse_args():
     parser.add_argument(
         "--output-dir", type=str, default="results",
         help="Directory to save results (default: results)"
+    )
+    parser.add_argument(
+        "--model-dir", type=str, default="models",
+        help="Directory to save/load trained models (default: models)"
     )
     parser.add_argument(
         "--no-plot", action="store_true",
@@ -238,6 +242,89 @@ def plot_results(
         plt.savefig(plot_path, dpi=150, bbox_inches='tight')
         print(f"Query usage plot saved to: {plot_path}")
         plt.close()
+
+
+def print_entropy_analysis(results: list, property_counts: list, config: ExperimentConfig):
+    """Print detailed competitive options analysis for query triggering."""
+    if not config.allow_queries:
+        return
+    
+    print("\n" + "=" * 80)
+    print("COMPETITIVE OPTIONS ANALYSIS (Query Triggering Mechanism)")
+    print("=" * 80)
+    print(f"Query Threshold: {config.query_threshold:.1f}")
+    print("\nQuery triggers when num_competitive > threshold")
+    print("(num_competitive = count of Q-values within 20% of range from max)\n")
+    
+    # Collect stats across seeds
+    stats_by_prop = {}
+    for num_props in property_counts:
+        competitive_counts = []
+        decision_points = []
+        triggered_counts = []
+        trigger_rates = []
+        
+        for result in results:
+            if num_props in result.eval_entropy_stats_per_property:
+                stats = result.eval_entropy_stats_per_property[num_props]
+                competitive_counts.append(stats['mean_num_competitive'])
+                decision_points.append(stats['num_decision_points'])
+                triggered_counts.append(stats['num_triggered'])
+                trigger_rates.append(stats['trigger_rate'])
+        
+        if competitive_counts:
+            stats_by_prop[num_props] = {
+                'mean_competitive': np.mean(competitive_counts),
+                'std_competitive': np.std(competitive_counts),
+                'mean_decision_points': np.mean(decision_points),
+                'mean_triggered': np.mean(triggered_counts),
+                'mean_trigger_rate': np.mean(trigger_rates)
+            }
+    
+    # Print table header
+    print(f"{'Props':<8} {'Mean Competitive':<18} {'Decision Pts':<15} {'Triggered':<15} {'Trigger Rate':<15}")
+    print("-" * 85)
+    
+    for num_props in sorted(stats_by_prop.keys()):
+        s = stats_by_prop[num_props]
+        print(f"{num_props:<8} "
+              f"{s['mean_competitive']:.2f} ± {s['std_competitive']:.2f}       "
+              f"{s['mean_decision_points']:<15.1f} "
+              f"{s['mean_triggered']:<15.1f} "
+              f"{s['mean_trigger_rate']:<15.2%}")
+    
+    # Print sample Q-values from first seed
+    if results and property_counts:
+        print("\n" + "-" * 80)
+        print("SAMPLE Q-VALUES AT DECISION POINTS (First Seed, First Episode)")
+        print("-" * 80)
+        
+        for num_props in property_counts:
+            if num_props in results[0].eval_entropy_stats_per_property:
+                stats = results[0].eval_entropy_stats_per_property[num_props]
+                sample_decisions = stats.get('sample_decision_points', [])
+                
+                if sample_decisions:
+                    print(f"\n{num_props} Properties:")
+                    print(f"  {'Decision':<10} {'Competitive':<15} {'Triggered?':<12} {'Num Actions':<15}")
+                    print("  " + "-" * 75)
+                    
+                    for i, entry in enumerate(sample_decisions[:3]):  # Show first 3
+                        q_vals = entry.get('q_values', [])
+                        actions = entry.get('valid_actions', [])
+                        num_competitive = entry.get('num_competitive', 0)
+                        triggered = "YES" if entry.get('should_query', False) else "no"
+                        num_actions = len(actions)
+                        
+                        print(f"  {i+1:<10} {num_competitive:<15}          "
+                              f"{triggered:<12} {num_actions}")
+                        
+                        # Print Q-values and threshold info
+                        threshold = entry.get('competitive_threshold', 0)
+                        print(f"    {'Action':<10} {'Q-value':<15} {'Competitive?'}")
+                        for a, q in zip(actions, q_vals):
+                            is_competitive = "YES" if q > threshold else "no"
+                            print(f"    {a:<10} {q:<15.4f} {is_competitive}")
 
 
 def plot_training_curve(results: list, output_dir: str):
@@ -363,6 +450,8 @@ def main():
     print(f"  Property counts to test: {property_counts}")
     print(f"  Number of seeds: {args.num_seeds}")
     print(f"  Base seed: {args.seed}")
+    print(f"  Model directory: {args.model_dir}")
+    print(f"  Output directory: {args.output_dir}")
     print(f"\n  === QUERY SETTINGS ===")
     print(f"  Queries: {query_status}")
     if config.allow_queries:
@@ -384,7 +473,8 @@ def main():
         property_counts=property_counts,
         num_seeds=args.num_seeds,
         verbose=args.verbose,
-        api_key=api_key
+        api_key=api_key,
+        model_dir=args.model_dir
     )
 
     # Summarize results
@@ -427,6 +517,10 @@ def main():
     eval_means_arr = np.array([summary[p]['eval_mean'] for p in prop_counts_only])
     correlation = np.corrcoef(prop_counts_arr, eval_means_arr)[0, 1]
     print(f"\nCorrelation between property count and eval return: {correlation:.3f}")
+
+    # Print competitive options analysis if queries are enabled
+    if config.allow_queries:
+        print_entropy_analysis(results, property_counts, config)
 
     # Save summary
     summary_path = os.path.join(args.output_dir, 'summary.json')

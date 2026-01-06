@@ -2,6 +2,7 @@
 
 from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
+import os
 from dataclasses import dataclass, field
 
 from .environment import GridWorld
@@ -55,7 +56,7 @@ class ExperimentConfig:
     # Query parameters (for test time)
     allow_queries: bool = False
     query_budget: int = 5
-    query_threshold: float = 0.3
+    query_threshold: float = 0.8
     blend_factor: float = 0.5
     llm_model: str = "gpt-4o-mini"
 
@@ -75,6 +76,7 @@ class EpisodeResult:
     reward_properties: set = field(default_factory=set)
     queries_used: int = 0
     query_history: List[Dict] = field(default_factory=list)
+    entropy_history: List[Dict] = field(default_factory=list)
 
 
 @dataclass
@@ -89,6 +91,8 @@ class VariableExperimentResult:
     # Query statistics
     eval_queries_per_property: Dict[int, List[int]] = field(default_factory=dict)
     eval_avg_queries_per_property: Dict[int, float] = field(default_factory=dict)
+    # Entropy statistics
+    eval_entropy_stats_per_property: Dict[int, Dict] = field(default_factory=dict)
 
 
 def run_episode(
@@ -122,6 +126,12 @@ def run_episode(
     # If using query-augmented agent, set up human responder
     if isinstance(robot, QueryAugmentedRobotAgent) and not training:
         robot.set_human_responder(human_obs['reward_properties'])
+    
+    # For verbose output during evaluation, set reward properties on base agent
+    if not training and hasattr(robot, 'set_reward_properties_for_verbose'):
+        robot.set_reward_properties_for_verbose(human_obs['reward_properties'])
+    elif not training and isinstance(robot, QueryAugmentedRobotAgent) and hasattr(robot.base_agent, 'set_reward_properties_for_verbose'):
+        robot.base_agent.set_reward_properties_for_verbose(human_obs['reward_properties'])
 
     total_reward = 0.0
 
@@ -176,6 +186,7 @@ def run_episode(
         stats = robot.get_query_stats()
         result.queries_used = stats['queries_used']
         result.query_history = stats['query_history']
+        result.entropy_history = stats.get('entropy_history', [])
 
     return result
 
@@ -183,6 +194,7 @@ def run_episode(
 def create_variable_robot_agent(
     config: ExperimentConfig,
     env: GridWorld,
+    verbose: bool = False
 ) -> Union[DQNRobotAgent, HierarchicalDQNRobotAgent]:
     """
     Create a robot agent that can handle all property counts.
@@ -210,7 +222,8 @@ def create_variable_robot_agent(
             grid_size=config.grid_size,
             num_objects=config.num_objects,
             active_categories=all_categories,
-            seed=config.seed
+            seed=config.seed,
+            verbose=verbose
         )
     else:
         return DQNRobotAgent(
@@ -232,6 +245,31 @@ def create_variable_robot_agent(
             active_categories=all_categories,
             seed=config.seed
         )
+
+
+def get_model_path(config: ExperimentConfig, model_dir: str) -> str:
+    """
+    Generate a model filename based on the experiment configuration.
+    
+    Args:
+        config: Experiment configuration
+        model_dir: Directory to save the model
+    
+    Returns:
+        Full path to the model file
+    """
+    policy_type = "hierarchical" if config.use_hierarchical else "flat"
+    model_name = (
+        f"model_{policy_type}_"
+        f"grid{config.grid_size}_"
+        f"obj{config.num_objects}_"
+        f"k{config.num_rewarding_properties}_"
+        f"vals{config.num_property_values}_"
+        f"eps{config.num_train_episodes}_"
+        f"lr{config.learning_rate:.0e}_"
+        f"seed{config.seed}.pt"
+    )
+    return os.path.join(model_dir, model_name)
 
 
 def create_query_augmented_agent(
@@ -264,9 +302,9 @@ def create_query_augmented_agent(
         base_agent=base_agent,
         llm_interface=llm_interface,
         query_budget=config.query_budget,
-        query_threshold=config.query_threshold,
         blend_factor=config.blend_factor,
-        verbose=False
+        query_threshold=config.query_threshold,
+        verbose=True
     )
 
 
@@ -363,7 +401,8 @@ def run_variable_property_experiment(
     property_counts: List[int] = None,
     num_seeds: int = 1,
     verbose: bool = True,
-    api_key: Optional[str] = None
+    api_key: Optional[str] = None,
+    model_dir: Optional[str] = None
 ) -> Tuple[List[VariableExperimentResult], RobotAgent]:
     """
     Run experiment with variable property training and per-property evaluation.
@@ -374,6 +413,7 @@ def run_variable_property_experiment(
         num_seeds: Number of random seeds
         verbose: Whether to print progress
         api_key: OpenAI API key for queries (optional)
+        model_dir: Directory to save/load models (if None, models won't be saved/loaded)
     
     Returns:
         Tuple of (results list, last trained robot)
@@ -440,17 +480,40 @@ def run_variable_property_experiment(
             # Force hierarchical for query support
             current_config.use_hierarchical = True
         
-        base_robot = create_variable_robot_agent(current_config, env)
+        base_robot = create_variable_robot_agent(current_config, env, verbose=True)
 
-        if verbose:
-            print("\nTraining with variable property counts...")
+        # Check if model exists and should be loaded
+        model_exists = False
+        model_path = None
+        if model_dir is not None:
+            os.makedirs(model_dir, exist_ok=True)
+            model_path = get_model_path(current_config, model_dir)
+            model_exists = os.path.exists(model_path)
+        
+        if model_exists:
+            if verbose:
+                print(f"\nLoading existing model from: {model_path}")
+            base_robot.load(model_path)
+            # Create dummy training rewards for compatibility
+            train_rewards = [0.0] * current_config.num_train_episodes
+        else:
+            if verbose:
+                if model_path:
+                    print(f"\nNo existing model found at: {model_path}")
+                print("Training with variable property counts...")
 
-        train_rewards = run_variable_training(
-            current_config,
-            base_robot,
-            property_counts,
-            verbose=verbose
-        )
+            train_rewards = run_variable_training(
+                current_config,
+                base_robot,
+                property_counts,
+                verbose=verbose
+            )
+            
+            # Save the trained model
+            if model_path is not None:
+                if verbose:
+                    print(f"\nSaving trained model to: {model_path}")
+                base_robot.save(model_path)
 
         # Wrap with query augmentation if enabled
         if current_config.allow_queries and isinstance(base_robot, HierarchicalDQNRobotAgent):
@@ -458,7 +521,7 @@ def run_variable_property_experiment(
             if verbose:
                 print(f"\nQuery augmentation enabled:")
                 print(f"  Budget: {current_config.query_budget}")
-                print(f"  Threshold: {current_config.query_threshold}")
+                print(f"  Query threshold: {current_config.query_threshold}")
                 print(f"  Blend factor: {current_config.blend_factor}")
         else:
             eval_robot = base_robot
@@ -488,6 +551,26 @@ def run_variable_property_experiment(
             result.eval_stds_per_property[num_props] = np.std(eval_rewards)
             result.eval_queries_per_property[num_props] = eval_queries
             result.eval_avg_queries_per_property[num_props] = np.mean(eval_queries)
+            
+            # Collect entropy statistics
+            if current_config.allow_queries:
+                all_entropy_history = []
+                for r in eval_results:
+                    all_entropy_history.extend(r.entropy_history)
+                
+                if all_entropy_history:
+                    num_competitive_values = [h['num_competitive'] for h in all_entropy_history]
+                    num_decision_points = len(all_entropy_history)
+                    num_triggered = sum(1 for h in all_entropy_history if h['should_query'])
+                    
+                    result.eval_entropy_stats_per_property[num_props] = {
+                        'mean_num_competitive': np.mean(num_competitive_values),
+                        'std_num_competitive': np.std(num_competitive_values),
+                        'num_decision_points': num_decision_points,
+                        'num_triggered': num_triggered,
+                        'trigger_rate': num_triggered / num_decision_points if num_decision_points > 0 else 0,
+                        'sample_decision_points': all_entropy_history[:5]  # Keep first 5 for debugging
+                    }
 
             if verbose:
                 query_info = f", avg queries={result.eval_avg_queries_per_property[num_props]:.2f}" if current_config.allow_queries else ""

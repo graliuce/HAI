@@ -33,3 +33,4 @@ env/
 
 # Log files (regeneratable)
 *.log
+.env

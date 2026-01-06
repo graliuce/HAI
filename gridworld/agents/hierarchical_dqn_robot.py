@@ -127,7 +127,8 @@ class HierarchicalDQNRobotAgent:
         num_objects: int = 20,
         active_categories: List[str] = None,
         seed: Optional[int] = None,
-        device: str = None
+        device: str = None,
+        verbose: bool = False
     ):
         if not TORCH_AVAILABLE:
             raise ImportError("PyTorch is required for DQN. Install with: pip install torch")
@@ -147,6 +148,7 @@ class HierarchicalDQNRobotAgent:
         self.grid_size = grid_size
         self.num_objects = num_objects
         self.hidden_dims = hidden_dims or [64, 64]
+        self.verbose = verbose
 
         # Set active categories
         self.active_categories = active_categories or PROPERTY_CATEGORIES[:2]
@@ -218,6 +220,9 @@ class HierarchicalDQNRobotAgent:
         self.total_steps = 0
         self.train_losses = []
         self._n_updates = 0
+        
+        # For verbose output during evaluation
+        self.true_reward_properties: Optional[Set[str]] = None
 
     def _build_property_action_mapping(self):
         """Build mapping from action index to property value."""
@@ -384,6 +389,57 @@ class HierarchicalDQNRobotAgent:
 
         return False
 
+    def set_reward_properties_for_verbose(self, reward_properties: Set[str]):
+        """Set the true reward properties for verbose output during evaluation."""
+        self.true_reward_properties = reward_properties
+
+    def _print_decision_summary(self, observation: dict, q_values: np.ndarray, 
+                                 valid_actions: List[int], selected_action: int):
+        """Print a summary of the high-level decision."""
+        print("\n" + "="*80)
+        print("HIGH-LEVEL DECISION")
+        print("="*80)
+        
+        # Print rewarding properties if available
+        if self.true_reward_properties is not None:
+            rewarding_props = sorted(list(self.true_reward_properties))
+            print(f"True Rewarding Properties: {rewarding_props}")
+        
+        # Count human collections
+        human_collected = observation.get('human_collected', [])
+        print(f"Human objects collected: {len(human_collected)}")
+        
+        # Get valid Q-values for table
+        valid_q = q_values[valid_actions]
+        
+        # Calculate softmax probabilities
+        q_max = valid_q.max()
+        probs = np.exp(valid_q - q_max)
+        probs = probs / (probs.sum() + 1e-8)
+        
+        # Calculate entropy
+        entropy = -np.sum(probs * np.log(probs + 1e-10))
+        max_entropy = np.log(len(valid_actions))
+        normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0
+        print(f"Entropy: {normalized_entropy:.4f}")
+        
+        # Print Q-values table
+        rewarding_set = self.true_reward_properties if self.true_reward_properties is not None else set()
+        print(f"\n{'Action':<15} {'Property':<15} {'Q-value':<12} {'Observed':<12} {'R?'}")
+        print("-" * 65)
+        for i, action_idx in enumerate(valid_actions):
+            prop = self.property_values[action_idx]
+            q_val = valid_q[i]
+            obs_count = self.inferred_properties.get(prop, 0.0)
+            is_rewarding = "✓" if prop in rewarding_set else ""
+            marker = " <--" if action_idx == selected_action else ""
+            print(f"{action_idx:<15} {prop:<15} {q_val:.4f}       {obs_count:<12.0f} {is_rewarding}{marker}")
+        
+        selected_prop = self.property_values[selected_action]
+        is_selected_rewarding = "✓ (CORRECT)" if selected_prop in rewarding_set else "✗ (WRONG)" if rewarding_set else ""
+        print(f"\nSelected: Action {selected_action} (property: {selected_prop}) {is_selected_rewarding}")
+        print("="*80 + "\n")
+
     def _select_goal(self, observation: dict, training: bool = True) -> int:
         """
         High-level policy: Select which property to target.
@@ -397,21 +453,27 @@ class HierarchicalDQNRobotAgent:
         if not valid_actions:
             return 0
 
+        # Get Q-values
+        with torch.no_grad():
+            state_tensor = torch.FloatTensor(high_level_input).unsqueeze(0).to(self.device)
+            q_values = self.high_level_q_network(state_tensor)
+            q_values_np = q_values.cpu().numpy()[0]
+
         # Epsilon-greedy
         if training and self.rng.random() < self.epsilon:
-            return self.rng.choice(valid_actions)
+            selected_action = self.rng.choice(valid_actions)
         else:
-            with torch.no_grad():
-                state_tensor = torch.FloatTensor(high_level_input).unsqueeze(0).to(self.device)
-                q_values = self.high_level_q_network(state_tensor)
-                q_values_np = q_values.cpu().numpy()[0]
+            # Mask invalid actions
+            masked_q = np.full_like(q_values_np, -float('inf'))
+            for a in valid_actions:
+                masked_q[a] = q_values_np[a]
+            selected_action = int(np.argmax(masked_q))
 
-                # Mask invalid actions
-                masked_q = np.full_like(q_values_np, -float('inf'))
-                for a in valid_actions:
-                    masked_q[a] = q_values_np[a]
+        # Print decision if verbose and not training
+        if self.verbose and not training:
+            self._print_decision_summary(observation, q_values_np, valid_actions, selected_action)
 
-                return int(np.argmax(masked_q))
+        return selected_action
 
     def _find_nearest_object_with_property(
         self,
