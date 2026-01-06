@@ -99,8 +99,8 @@ class HierarchicalDQNRobotAgent:
     - The agent infers which properties are rewarding by observing what the human collects
     - Robot waits until human collects first object before starting to collect
 
-    State space (compact, ~36 dims with 10 properties):
-    - Robot position (2), Human position (2)
+    State space (compact, ~38 dims with 10 properties):
+    - Robot position (2), Human position (2), Relative human position (2)
     - Can collect flag (1), Number of human collected (1)
     - Per-property features (3 each): inferred score, object count, min distance
     """
@@ -239,6 +239,7 @@ class HierarchicalDQNRobotAgent:
         Compact state representation:
         - Robot position (2)
         - Human position (2)
+        - Relative position of human (2)
         - Robot can collect flag (1)
         - Number of human collected (1, normalized)
         - For each property value:
@@ -246,7 +247,7 @@ class HierarchicalDQNRobotAgent:
             - Number of available objects with this property (1, normalized)
             - Min distance to object with this property (1, normalized)
         """
-        base_features = 6  # robot pos (2) + human pos (2) + can_collect (1) + num_collected (1)
+        base_features = 8  # robot pos (2) + human pos (2) + relative pos (2) + can_collect (1) + num_collected (1)
         per_property_features = 3  # inferred_score + count + min_distance
         property_features = len(self.property_values) * per_property_features
 
@@ -266,6 +267,10 @@ class HierarchicalDQNRobotAgent:
         # Human position (normalized)
         features.append(human_pos[0] / self.grid_size)
         features.append(human_pos[1] / self.grid_size)
+
+        # Relative position of human to robot
+        features.append((human_pos[0] - robot_pos[0]) / self.grid_size)
+        features.append((human_pos[1] - robot_pos[1]) / self.grid_size)
 
         # Robot can collect flag
         robot_can_collect = observation.get('robot_can_collect', False)
