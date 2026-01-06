@@ -7,14 +7,13 @@ from dataclasses import dataclass, field
 
 from .environment import GridWorld
 from .agents.human import HumanAgent
-from .agents.dqn_robot import DQNRobotAgent
 from .agents.hierarchical_dqn_robot import HierarchicalDQNRobotAgent
 from .agents.query_augmented_robot import QueryAugmentedRobotAgent
 from .objects import PROPERTY_CATEGORIES
 from tqdm import tqdm
 
 # Type alias for robot agents
-RobotAgent = Union[DQNRobotAgent, HierarchicalDQNRobotAgent, QueryAugmentedRobotAgent]
+RobotAgent = Union[HierarchicalDQNRobotAgent, QueryAugmentedRobotAgent]
 
 
 @dataclass
@@ -48,10 +47,6 @@ class ExperimentConfig:
     gradient_steps: int = 1
     learning_starts: int = 1000
     hidden_dims: List[int] = field(default_factory=lambda: [64, 64])
-
-    # Hierarchical policy parameters
-    use_hierarchical: bool = False
-    high_level_interval: int = 3
 
     # Query parameters (for test time)
     allow_queries: bool = False
@@ -191,76 +186,51 @@ def run_episode(
     return result
 
 
-def create_variable_robot_agent(
+def create_robot_agent(
     config: ExperimentConfig,
     env: GridWorld,
     verbose: bool = False
-) -> Union[DQNRobotAgent, HierarchicalDQNRobotAgent]:
-    """
-    Create a robot agent that can handle all property counts.
-    """
+) -> HierarchicalDQNRobotAgent:
+    """Create a hierarchical robot agent that can handle all property counts."""
     all_categories = PROPERTY_CATEGORIES[:5]
     total_timesteps = config.num_train_episodes * config.max_steps_per_episode
 
-    if config.use_hierarchical:
-        return HierarchicalDQNRobotAgent(
-            num_actions=env.NUM_ACTIONS,
-            high_level_interval=config.high_level_interval,
-            learning_rate=config.learning_rate,
-            discount_factor=config.discount_factor,
-            epsilon_start=config.epsilon_start,
-            epsilon_end=config.epsilon_end,
-            exploration_fraction=config.exploration_fraction,
-            total_timesteps=total_timesteps,
-            buffer_size=config.buffer_size,
-            batch_size=config.batch_size,
-            target_update_freq=config.target_update_freq,
-            train_freq=config.train_freq,
-            gradient_steps=config.gradient_steps,
-            learning_starts=config.learning_starts,
-            hidden_dims=config.hidden_dims,
-            grid_size=config.grid_size,
-            num_objects=config.num_objects,
-            active_categories=all_categories,
-            seed=config.seed,
-            verbose=verbose
-        )
-    else:
-        return DQNRobotAgent(
-            num_actions=env.NUM_ACTIONS,
-            learning_rate=config.learning_rate,
-            discount_factor=config.discount_factor,
-            epsilon_start=config.epsilon_start,
-            epsilon_end=config.epsilon_end,
-            exploration_fraction=config.exploration_fraction,
-            total_timesteps=total_timesteps,
-            buffer_size=config.buffer_size,
-            batch_size=config.batch_size,
-            target_update_freq=config.target_update_freq,
-            train_freq=config.train_freq,
-            gradient_steps=config.gradient_steps,
-            learning_starts=config.learning_starts,
-            hidden_dims=config.hidden_dims,
-            grid_size=config.grid_size,
-            active_categories=all_categories,
-            seed=config.seed
-        )
+    return HierarchicalDQNRobotAgent(
+        num_actions=env.NUM_ACTIONS,
+        learning_rate=config.learning_rate,
+        discount_factor=config.discount_factor,
+        epsilon_start=config.epsilon_start,
+        epsilon_end=config.epsilon_end,
+        exploration_fraction=config.exploration_fraction,
+        total_timesteps=total_timesteps,
+        buffer_size=config.buffer_size,
+        batch_size=config.batch_size,
+        target_update_freq=config.target_update_freq,
+        train_freq=config.train_freq,
+        gradient_steps=config.gradient_steps,
+        learning_starts=config.learning_starts,
+        hidden_dims=config.hidden_dims,
+        grid_size=config.grid_size,
+        num_objects=config.num_objects,
+        active_categories=all_categories,
+        seed=config.seed,
+        verbose=verbose
+    )
 
 
 def get_model_path(config: ExperimentConfig, model_dir: str) -> str:
     """
     Generate a model filename based on the experiment configuration.
-    
+
     Args:
         config: Experiment configuration
         model_dir: Directory to save the model
-    
+
     Returns:
         Full path to the model file
     """
-    policy_type = "hierarchical" if config.use_hierarchical else "flat"
     model_name = (
-        f"model_{policy_type}_"
+        f"model_hierarchical_"
         f"grid{config.grid_size}_"
         f"obj{config.num_objects}_"
         f"k{config.num_rewarding_properties}_"
@@ -308,15 +278,13 @@ def create_query_augmented_agent(
     )
 
 
-def run_variable_training(
+def run_training(
     config: ExperimentConfig,
-    robot: Union[DQNRobotAgent, HierarchicalDQNRobotAgent],
+    robot: HierarchicalDQNRobotAgent,
     property_counts: List[int],
     verbose: bool = False
 ) -> List[float]:
-    """
-    Run training where property count varies each episode.
-    """
+    """Run training where property count varies each episode."""
     rewards = []
     rng = np.random.RandomState(config.seed)
 
@@ -336,8 +304,6 @@ def run_variable_training(
         human = HumanAgent()
         result = run_episode(env, human, robot, training=True)
         rewards.append(result.robot_reward)
-
-        robot.decay_epsilon()
 
         if verbose and (episode + 1) % 100 == 0:
             recent_avg = np.mean(rewards[-100:])
@@ -455,8 +421,6 @@ def run_variable_property_experiment(
             gradient_steps=config.gradient_steps,
             learning_starts=config.learning_starts,
             hidden_dims=config.hidden_dims,
-            use_hierarchical=config.use_hierarchical,
-            high_level_interval=config.high_level_interval,
             allow_queries=config.allow_queries,
             query_budget=config.query_budget,
             query_threshold=config.query_threshold,
@@ -475,12 +439,7 @@ def run_variable_property_experiment(
             seed=seed
         )
 
-        # Create base robot (must be hierarchical for queries)
-        if current_config.allow_queries:
-            # Force hierarchical for query support
-            current_config.use_hierarchical = True
-        
-        base_robot = create_variable_robot_agent(current_config, env, verbose=True)
+        base_robot = create_robot_agent(current_config, env, verbose=True)
 
         # Check if model exists and should be loaded
         model_exists = False
@@ -502,7 +461,7 @@ def run_variable_property_experiment(
                     print(f"\nNo existing model found at: {model_path}")
                 print("Training with variable property counts...")
 
-            train_rewards = run_variable_training(
+            train_rewards = run_training(
                 current_config,
                 base_robot,
                 property_counts,
@@ -516,7 +475,7 @@ def run_variable_property_experiment(
                 base_robot.save(model_path)
 
         # Wrap with query augmentation if enabled
-        if current_config.allow_queries and isinstance(base_robot, HierarchicalDQNRobotAgent):
+        if current_config.allow_queries:
             eval_robot = create_query_augmented_agent(base_robot, current_config, api_key)
             if verbose:
                 print(f"\nQuery augmentation enabled:")

@@ -528,12 +528,22 @@ class GridWorld:
         ax.set_xticklabels([])
         ax.set_yticklabels([])
 
+        # Calculate rewards for display
+        human_reward = sum(
+            1 if obj.has_any_property(self.reward_properties) else -1
+            for obj in self.human_collected
+        )
+        robot_reward = sum(
+            1 if obj.has_any_property(self.reward_properties) else -1
+            for obj in self.robot_collected
+        )
+
         # Add title with episode info
         title_lines = [
             f'Step: {self.step_count}/{self.max_steps}',
             f'Distinct Properties: {self.num_distinct_properties} ({", ".join(self.active_categories)})',
             f'Reward Properties: {", ".join(sorted(self.reward_properties))}',
-            f'Human Collected: {len(self.human_collected)} | Robot Collected: {len(self.robot_collected)}'
+            f'Human Reward: {human_reward:+d} | Robot Reward: {robot_reward:+d}'
         ]
         ax.set_title('\n'.join(title_lines), fontsize=11, pad=10)
 
@@ -684,12 +694,22 @@ class GridWorld:
         ax.set_xticks([])
         ax.set_yticks([])
 
+        # Calculate rewards for display
+        human_reward = sum(
+            1 if obj.has_any_property(self.reward_properties) else -1
+            for obj in self.human_collected
+        )
+        robot_reward = sum(
+            1 if obj.has_any_property(self.reward_properties) else -1
+            for obj in self.robot_collected
+        )
+
         # Add title
         title_lines = [
             f'Step: {self.step_count}/{self.max_steps}  |  '
             f'Props: {self.num_distinct_properties} ({", ".join(self.active_categories)})',
             f'Reward: {", ".join(sorted(self.reward_properties))}  |  '
-            f'H: {len(self.human_collected)}  R: {len(self.robot_collected)}'
+            f'H: {human_reward:+d}  R: {robot_reward:+d}'
         ]
         ax.set_title('\n'.join(title_lines), fontsize=10, pad=5)
 
