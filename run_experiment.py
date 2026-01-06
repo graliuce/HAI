@@ -159,6 +159,10 @@ def parse_args():
         help="Disable plotting"
     )
     parser.add_argument(
+        "--gen-gifs", action="store_true",
+        help="Only generate GIFs (skip training and full evaluation)"
+    )
+    parser.add_argument(
         "--verbose", action="store_true",
         help="Print detailed progress"
     )
@@ -448,6 +452,42 @@ def main():
 
     # Save results
     os.makedirs(args.output_dir, exist_ok=True)
+
+    # Handle --gen-gifs mode (just generate GIFs, skip full experiment)
+    if args.gen_gifs:
+        print("\n" + "=" * 60)
+        print("GIF Generation Mode")
+        print("=" * 60)
+
+        from gridworld.environment import GridWorld
+        from gridworld.experiment import create_robot_agent, get_model_path
+
+        # Create environment and robot
+        env = GridWorld(
+            grid_size=config.grid_size,
+            num_objects=config.num_objects,
+            reward_ratio=config.reward_ratio,
+            num_rewarding_properties=config.num_rewarding_properties,
+            num_distinct_properties=5,
+            num_property_values=config.num_property_values,
+            seed=config.seed
+        )
+        robot = create_robot_agent(config, env, verbose=False)
+
+        # Load trained model
+        model_path = get_model_path(config, args.model_dir)
+        if os.path.exists(model_path):
+            print(f"Loading model from: {model_path}")
+            robot.load(model_path)
+        else:
+            print(f"WARNING: No trained model found at {model_path}")
+            print("GIFs will use untrained agent behavior.")
+
+        # Render GIFs
+        render_episode_gifs(property_counts, args.output_dir, config, robot)
+
+        print("\nGIF generation complete!")
+        return
 
     # Run experiment
     print("\n" + "=" * 60)
