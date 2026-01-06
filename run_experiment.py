@@ -545,8 +545,7 @@ def main():
         try:
             plot_results(summary, args.output_dir, config)
             plot_training_curve(results, args.output_dir)
-            if config.allow_queries:
-                render_episode_gifs(property_counts, args.output_dir, config, trained_robot)
+            render_episode_gifs(property_counts, args.output_dir, config, trained_robot)
         except Exception as e:
             print(f"Warning: Could not create plots: {e}")
 
