@@ -6,13 +6,12 @@
     "num_rewarding_properties": 2,
     "num_property_values": 5,
     "num_train_episodes": 100000,
-    "num_eval_episodes": 15,
+    "num_eval_episodes": 100,
     "learning_rate": 0.00025,
     "hidden_dims": [
       128,
       128
     ],
-    "use_hierarchical": true,
     "allow_queries": false,
     "query_budget": 5,
     "query_threshold": 0.9,
@@ -23,31 +22,31 @@
   },
   "summary": {
     "1": {
-      "eval_mean": 3.2,
+      "eval_mean": 3.06,
       "eval_std": 0.0,
       "eval_sem": 0.0,
       "avg_queries": 0.0
     },
     "2": {
-      "eval_mean": 0.7333333333333333,
+      "eval_mean": 1.35,
       "eval_std": 0.0,
       "eval_sem": 0.0,
       "avg_queries": 0.0
     },
     "3": {
-      "eval_mean": 1.0,
+      "eval_mean": 0.63,
       "eval_std": 0.0,
       "eval_sem": 0.0,
       "avg_queries": 0.0
     },
     "4": {
-      "eval_mean": 0.3333333333333333,
+      "eval_mean": 0.56,
       "eval_std": 0.0,
       "eval_sem": 0.0,
       "avg_queries": 0.0
     },
     "5": {
-      "eval_mean": -1.0666666666666667,
+      "eval_mean": -0.35,
       "eval_std": 0.0,
       "eval_sem": 0.0,
       "avg_queries": 0.0
@@ -57,6 +56,6 @@
       "train_std": 0.0
     }
   },
-  "correlation": -0.9166049866101373,
-  "timestamp": "2026-01-05T10:32:35.641603"
+  "correlation": -0.9434254818868097,
+  "timestamp": "2026-01-06T15:49:13.473236"
 }
