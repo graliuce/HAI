@@ -2,13 +2,17 @@
 """
 Main script to run the gridworld multi-agent experiment.
 
-This experiment investigates how the number of distinct object properties
-affects the robot's ability to infer reward specifications from human behavior.
+This experiment investigates how a robot can learn reward specifications by
+observing human behavior in a multi-agent gridworld environment.
+
+The robot uses a hierarchical DQN:
+- High-level policy: Selects which property to target (learned via Q-learning)
+- Low-level policy: Navigates to nearest object with that property (A* pathfinding)
 
 The robot is trained with variable property counts (1-5) each episode,
 then evaluated separately on each property count to measure generalization.
 
-With --allow_queries flag, the robot can query the human at test time
+With --allow-queries flag, the robot can query the human at test time
 to learn preferences faster through natural language.
 """
 
@@ -105,20 +109,10 @@ def parse_args():
         help="Comma-separated hidden layer dimensions (default: 128,128)"
     )
 
-    # Hierarchical policy parameters
-    parser.add_argument(
-        "--hierarchical", action="store_true",
-        help="Use hierarchical policy (required for queries)"
-    )
-    parser.add_argument(
-        "--high-level-interval", type=int, default=3,
-        help="Steps between high-level goal decisions (default: 3)"
-    )
-
     # Query parameters
     parser.add_argument(
         "--allow-queries", action="store_true",
-        help="Allow robot to query human at test time (requires --hierarchical)"
+        help="Allow robot to query human at test time"
     )
     parser.add_argument(
         "--query-budget", type=int, default=5,
@@ -163,6 +157,10 @@ def parse_args():
     parser.add_argument(
         "--no-plot", action="store_true",
         help="Disable plotting"
+    )
+    parser.add_argument(
+        "--gen-gifs", action="store_true",
+        help="Only generate GIFs (skip training and full evaluation)"
     )
     parser.add_argument(
         "--verbose", action="store_true",
@@ -395,15 +393,11 @@ def main():
     api_key = args.api_key or os.environ.get('OPENAI_API_KEY')
     
     # Validate query settings
-    if args.allow_queries:
-        if not api_key:
-            print("WARNING: --allow-queries requires OpenAI API key.")
-            print("Set via --api-key or OPENAI_API_KEY environment variable.")
-            print("Continuing without queries...")
-            args.allow_queries = False
-        else:
-            # Force hierarchical for queries
-            args.hierarchical = True
+    if args.allow_queries and not api_key:
+        print("WARNING: --allow-queries requires OpenAI API key.")
+        print("Set via --api-key or OPENAI_API_KEY environment variable.")
+        print("Continuing without queries...")
+        args.allow_queries = False
 
     # Create config
     config = ExperimentConfig(
@@ -420,8 +414,6 @@ def main():
         target_update_freq=args.target_update_freq,
         learning_starts=args.learning_starts,
         hidden_dims=hidden_dims,
-        use_hierarchical=args.hierarchical,
-        high_level_interval=args.high_level_interval,
         allow_queries=args.allow_queries,
         query_budget=args.query_budget,
         query_threshold=args.query_threshold,
@@ -430,14 +422,12 @@ def main():
         seed=args.seed
     )
 
-    policy_type = "Hierarchical" if config.use_hierarchical else "Flat DQN"
     query_status = "ENABLED" if config.allow_queries else "DISABLED"
-    
+
     print("=" * 60)
-    print(f"Gridworld Variable Property Training Experiment")
+    print("Gridworld Variable Property Training Experiment")
     print("=" * 60)
-    print(f"\nConfiguration:")
-    print(f"  Policy type: {policy_type}")
+    print("\nConfiguration:")
     print(f"  Grid size: {config.grid_size}x{config.grid_size}")
     print(f"  Number of objects: {config.num_objects}")
     print(f"  Reward ratio: {config.reward_ratio}")
@@ -462,6 +452,42 @@ def main():
 
     # Save results
     os.makedirs(args.output_dir, exist_ok=True)
+
+    # Handle --gen-gifs mode (just generate GIFs, skip full experiment)
+    if args.gen_gifs:
+        print("\n" + "=" * 60)
+        print("GIF Generation Mode")
+        print("=" * 60)
+
+        from gridworld.environment import GridWorld
+        from gridworld.experiment import create_robot_agent, get_model_path
+
+        # Create environment and robot
+        env = GridWorld(
+            grid_size=config.grid_size,
+            num_objects=config.num_objects,
+            reward_ratio=config.reward_ratio,
+            num_rewarding_properties=config.num_rewarding_properties,
+            num_distinct_properties=5,
+            num_property_values=config.num_property_values,
+            seed=config.seed
+        )
+        robot = create_robot_agent(config, env, verbose=False)
+
+        # Load trained model
+        model_path = get_model_path(config, args.model_dir)
+        if os.path.exists(model_path):
+            print(f"Loading model from: {model_path}")
+            robot.load(model_path)
+        else:
+            print(f"WARNING: No trained model found at {model_path}")
+            print("GIFs will use untrained agent behavior.")
+
+        # Render GIFs
+        render_episode_gifs(property_counts, args.output_dir, config, robot)
+
+        print("\nGIF generation complete!")
+        return
 
     # Run experiment
     print("\n" + "=" * 60)
@@ -534,7 +560,6 @@ def main():
         'num_eval_episodes': config.num_eval_episodes,
         'learning_rate': config.learning_rate,
         'hidden_dims': config.hidden_dims,
-        'use_hierarchical': config.use_hierarchical,
         'allow_queries': config.allow_queries,
         'query_budget': config.query_budget,
         'query_threshold': config.query_threshold,
@@ -560,8 +585,7 @@ def main():
         try:
             plot_results(summary, args.output_dir, config)
             plot_training_curve(results, args.output_dir)
-            if config.allow_queries:
-                render_episode_gifs(property_counts, args.output_dir, config, trained_robot)
+            render_episode_gifs(property_counts, args.output_dir, config, trained_robot)
         except Exception as e:
             print(f"Warning: Could not create plots: {e}")
 
