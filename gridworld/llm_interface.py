@@ -182,22 +182,26 @@ Output only valid JSON in this format: {{"property_value1": weight1, "property_v
 
 class SimulatedHumanResponder:
     """Simulates human responses using LLM based on true reward properties."""
-    
+
     def __init__(
-        self, 
-        reward_properties: set, 
+        self,
+        reward_properties: set,
         llm_interface: LLMInterface,
-        verbose: bool = False
+        verbose: bool = False,
+        property_value_rewards: Optional[Dict[str, float]] = None
     ):
         """
         Args:
             reward_properties: Set of property values that give reward
             llm_interface: LLM interface for generating responses
             verbose: Whether to print debug info
+            property_value_rewards: For additive valuation mode, dict mapping
+                property values to their reward amounts
         """
         self.reward_properties = reward_properties
         self.llm = llm_interface
         self.verbose = verbose
+        self.property_value_rewards = property_value_rewards  # For additive mode
     
     def respond_to_query(
         self,
@@ -207,31 +211,41 @@ class SimulatedHumanResponder:
     ) -> str:
         """
         Generate a response using LLM based on true preferences.
-        
+
         The human indicates which properties are valuable (give reward).
-        
+
         Args:
             query: The question asked
             board_properties: Properties currently on the board
             collected_properties: Properties from objects human has collected
-            
+
         Returns:
             Natural language response
         """
-        # Find which properties on the board or collected are rewarding
-        rewarding_on_board = [p for p in board_properties if p in self.reward_properties]
-        rewarding_collected = [p for p in collected_properties if p in self.reward_properties]
-        
-        if self.verbose:
-            print(f"[SimulatedHuman] Rewarding properties: {self.reward_properties}")
-            print(f"[SimulatedHuman] Rewarding on board: {rewarding_on_board}")
-            print(f"[SimulatedHuman] Rewarding collected: {rewarding_collected}")
-        
         # Format context for LLM
         board_props_str = ", ".join(board_properties) if board_properties else "none"
         collected_props_str = ", ".join(collected_properties) if collected_properties else "none"
+
+        if self.property_value_rewards:
+            # Additive valuation mode
+            return self._respond_additive_mode(query, board_props_str, collected_props_str,
+                                               board_properties)
+        else:
+            # Standard mode
+            return self._respond_standard_mode(query, board_props_str, collected_props_str)
+
+    def _respond_standard_mode(
+        self,
+        query: str,
+        board_props_str: str,
+        collected_props_str: str
+    ) -> str:
+        """Generate response for standard (binary reward) mode."""
         rewarding_props_str = ", ".join(self.reward_properties)
-        
+
+        if self.verbose:
+            print(f"[SimulatedHuman] Rewarding properties: {self.reward_properties}")
+
         prompt = f"""You are simulating a human in a collaborative environment where you and a robot are collecting objects together to maximize reward.
 
 Your true preferences (properties that give reward): {rewarding_props_str}
@@ -251,6 +265,69 @@ Output only your response, nothing else."""
             {"role": "system", "content": "You are simulating a helpful human collaborator who clearly communicates their preferences."},
             {"role": "user", "content": prompt}
         ]
-        
+
+        response = self.llm._call_llm(messages, temperature=0.7)
+        return response.strip()
+
+    def _respond_additive_mode(
+        self,
+        query: str,
+        board_props_str: str,
+        collected_props_str: str,
+        board_properties: List[str]
+    ) -> str:
+        """Generate response for additive valuation mode."""
+        # Sort rewards by value (highest first)
+        sorted_rewards = sorted(
+            self.property_value_rewards.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+
+        # Format the reward values for the prompt
+        rewards_str = "\n".join([
+            f"  - {prop}: {reward:+.2f}"
+            for prop, reward in sorted_rewards
+        ])
+
+        # Identify relevant properties (those on the board)
+        relevant_rewards = {
+            prop: reward for prop, reward in self.property_value_rewards.items()
+            if prop in board_properties
+        }
+        sorted_relevant = sorted(relevant_rewards.items(), key=lambda x: x[1], reverse=True)
+
+        if self.verbose:
+            print(f"[SimulatedHuman] Property value rewards:")
+            for prop, reward in sorted_rewards:
+                print(f"    {prop}: {reward:+.2f}")
+
+        prompt = f"""You are simulating a human in a collaborative environment where you and a robot are collecting objects together to maximize reward.
+
+In this environment, each property value contributes a certain amount to the reward. The total reward for an object is the sum of rewards from all its property values.
+
+YOUR TRUE REWARD VALUES FOR EACH PROPERTY:
+{rewards_str}
+
+Current context:
+- Properties on the board: {board_props_str}
+- Properties you have collected: {collected_props_str}
+
+Question from the robot: "{query}"
+
+IMPORTANT INSTRUCTIONS:
+1. Generate a natural, helpful response (1-3 sentences)
+2. Only reveal 1-2 pieces of information at a time - do NOT list all reward values
+3. Focus on what's most relevant to the question or most helpful (e.g., mention high-value or low-value properties)
+4. Be specific about whether a property adds or subtracts from reward, but don't give exact numerical values
+5. You can say things like "blue is quite valuable" or "avoid square objects, they hurt your score"
+
+Output only your response, nothing else."""
+
+        messages = [
+            {"role": "system", "content": "You are simulating a helpful human collaborator who communicates preferences naturally, revealing information gradually rather than all at once."},
+            {"role": "user", "content": prompt}
+        ]
+
         response = self.llm._call_llm(messages, temperature=0.7)
         return response.strip()

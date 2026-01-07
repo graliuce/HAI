@@ -26,6 +26,7 @@ class ExperimentConfig:
     reward_ratio: float = 0.4
     num_rewarding_properties: int = 2
     num_property_values: int = 5
+    additive_valuation: bool = False  # Use additive valuation reward mode
 
     # Training parameters
     num_train_episodes: int = 1000
@@ -113,14 +114,21 @@ def run_episode(
     # Reset environment and agents
     observation = env.reset()
     human_obs = env.get_human_observation()
-    human.reset(human_obs['reward_properties'])
+    human.reset(
+        human_obs['reward_properties'],
+        additive_valuation=human_obs.get('additive_valuation', False),
+        object_rewards=human_obs.get('object_rewards')
+    )
     result.reward_properties = human_obs['reward_properties']
 
     robot.reset()
 
     # If using query-augmented agent, set up human responder
     if isinstance(robot, QueryAugmentedRobotAgent) and not training:
-        robot.set_human_responder(human_obs['reward_properties'])
+        robot.set_human_responder(
+            human_obs['reward_properties'],
+            property_value_rewards=human_obs.get('property_value_rewards')
+        )
     
     # For verbose output during evaluation, set reward properties on base agent
     if not training and hasattr(robot, 'set_reward_properties_for_verbose'):
@@ -298,6 +306,7 @@ def run_training(
             num_rewarding_properties=config.num_rewarding_properties,
             num_distinct_properties=num_props,
             num_property_values=config.num_property_values,
+            additive_valuation=config.additive_valuation,
             seed=config.seed + episode
         )
 
@@ -345,6 +354,7 @@ def run_evaluation_per_property_count(
             num_rewarding_properties=config.num_rewarding_properties,
             num_distinct_properties=num_distinct_properties,
             num_property_values=config.num_property_values,
+            additive_valuation=config.additive_valuation,
             seed=config.seed + 10000 + ep
         )
 
@@ -406,6 +416,7 @@ def run_variable_property_experiment(
             reward_ratio=config.reward_ratio,
             num_rewarding_properties=config.num_rewarding_properties,
             num_property_values=config.num_property_values,
+            additive_valuation=config.additive_valuation,
             num_train_episodes=config.num_train_episodes,
             num_eval_episodes=config.num_eval_episodes,
             max_steps_per_episode=config.max_steps_per_episode,
@@ -436,6 +447,7 @@ def run_variable_property_experiment(
             num_rewarding_properties=current_config.num_rewarding_properties,
             num_distinct_properties=5,
             num_property_values=current_config.num_property_values,
+            additive_valuation=current_config.additive_valuation,
             seed=seed
         )
 
@@ -600,6 +612,7 @@ def render_episode_gif(
         num_rewarding_properties=config.num_rewarding_properties,
         num_distinct_properties=num_distinct_properties,
         num_property_values=config.num_property_values,
+        additive_valuation=config.additive_valuation,
         seed=np.random.randint(0, 1000000)
     )
 
@@ -617,12 +630,19 @@ def render_episode_gif(
 
     observation = vis_env.reset()
     human_obs = vis_env.get_human_observation()
-    human.reset(human_obs['reward_properties'])
+    human.reset(
+        human_obs['reward_properties'],
+        additive_valuation=human_obs.get('additive_valuation', False),
+        object_rewards=human_obs.get('object_rewards')
+    )
     robot.reset()
 
     # Set up human responder for query-augmented agent
     if isinstance(robot, QueryAugmentedRobotAgent):
-        robot.set_human_responder(human_obs['reward_properties'])
+        robot.set_human_responder(
+            human_obs['reward_properties'],
+            property_value_rewards=human_obs.get('property_value_rewards')
+        )
 
     frames = []
     frames.append(vis_env.render_to_array())
