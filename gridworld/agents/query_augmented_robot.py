@@ -170,14 +170,16 @@ class QueryAugmentedRobotAgent:
         self.has_started = False
         self.entropy_history = []
     
-    def set_human_responder(self, reward_properties: set):
+    def set_human_responder(self, reward_properties: set,
+                            property_value_rewards: Optional[Dict[str, float]] = None):
         """Set up simulated human responder with true preferences."""
         if self.llm is None:
             raise ValueError("LLM interface required for human responder")
         self.human_responder = SimulatedHumanResponder(
             reward_properties,
             llm_interface=self.llm,
-            verbose=self.verbose
+            verbose=self.verbose,
+            property_value_rewards=property_value_rewards
         )
     
     def _update_beliefs_from_observations(self, observation: dict):

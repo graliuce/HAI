@@ -72,6 +72,11 @@ def parse_args():
         "--num-property-values", type=int, default=5,
         help="Number of values per property category, 1-5 (default: 5)"
     )
+    parser.add_argument(
+        "--additive-valuation", action="store_true",
+        help="Use additive valuation reward mode: each property value has a Gaussian reward, "
+             "object reward is sum of its property value rewards"
+    )
 
     # Training parameters
     parser.add_argument(
@@ -406,6 +411,7 @@ def main():
         reward_ratio=args.reward_ratio,
         num_rewarding_properties=args.num_rewarding_properties,
         num_property_values=args.num_property_values,
+        additive_valuation=args.additive_valuation,
         num_train_episodes=args.train_episodes,
         num_eval_episodes=args.eval_episodes,
         learning_rate=args.learning_rate,
@@ -433,6 +439,7 @@ def main():
     print(f"  Reward ratio: {config.reward_ratio}")
     print(f"  Rewarding properties (K): {config.num_rewarding_properties}")
     print(f"  Property values per category: {config.num_property_values}")
+    print(f"  Additive valuation mode: {'ENABLED' if config.additive_valuation else 'DISABLED'}")
     print(f"  Training episodes: {config.num_train_episodes}")
     print(f"  Evaluation episodes: {config.num_eval_episodes}")
     print(f"  Learning rate: {config.learning_rate}")
@@ -470,6 +477,7 @@ def main():
             num_rewarding_properties=config.num_rewarding_properties,
             num_distinct_properties=5,
             num_property_values=config.num_property_values,
+            additive_valuation=config.additive_valuation,
             seed=config.seed
         )
         robot = create_robot_agent(config, env, verbose=False)
@@ -556,6 +564,7 @@ def main():
         'reward_ratio': config.reward_ratio,
         'num_rewarding_properties': config.num_rewarding_properties,
         'num_property_values': config.num_property_values,
+        'additive_valuation': config.additive_valuation,
         'num_train_episodes': config.num_train_episodes,
         'num_eval_episodes': config.num_eval_episodes,
         'learning_rate': config.learning_rate,

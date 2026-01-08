@@ -1,0 +1,62 @@
+{
+  "config": {
+    "grid_size": 10,
+    "num_objects": 30,
+    "reward_ratio": 0.4,
+    "num_rewarding_properties": 2,
+    "num_property_values": 5,
+    "additive_valuation": true,
+    "num_train_episodes": 100000,
+    "num_eval_episodes": 100,
+    "learning_rate": 0.00025,
+    "hidden_dims": [
+      128,
+      128
+    ],
+    "allow_queries": false,
+    "query_budget": 5,
+    "query_threshold": 0.9,
+    "blend_factor": 0.5,
+    "llm_model": "gpt-4o-mini",
+    "num_seeds": 1,
+    "base_seed": 43
+  },
+  "summary": {
+    "1": {
+      "eval_mean": 2.5537146036155356,
+      "eval_std": 0.0,
+      "eval_sem": 0.0,
+      "avg_queries": 0.0
+    },
+    "2": {
+      "eval_mean": 1.8986040062387644,
+      "eval_std": 0.0,
+      "eval_sem": 0.0,
+      "avg_queries": 0.0
+    },
+    "3": {
+      "eval_mean": 0.9949695858293021,
+      "eval_std": 0.0,
+      "eval_sem": 0.0,
+      "avg_queries": 0.0
+    },
+    "4": {
+      "eval_mean": 0.5963156656109764,
+      "eval_std": 0.0,
+      "eval_sem": 0.0,
+      "avg_queries": 0.0
+    },
+    "5": {
+      "eval_mean": 0.10202709559169078,
+      "eval_std": 0.0,
+      "eval_sem": 0.0,
+      "avg_queries": 0.0
+    },
+    "training": {
+      "train_mean": 1.6011956360038044,
+      "train_std": 0.0
+    }
+  },
+  "correlation": -0.9901072681586865,
+  "timestamp": "2026-01-07T10:39:11.111374"
+}
