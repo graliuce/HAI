@@ -3,6 +3,7 @@
 from .human import HumanAgent, HumanAgentAStar
 from .hierarchical_dqn_robot import HierarchicalDQNRobotAgent
 from .query_augmented_robot import QueryAugmentedRobotAgent, PreferenceBeliefs
+from .belief_based_robot import BeliefBasedRobotAgent, GaussianBeliefState
 
 __all__ = [
     'HumanAgent',
@@ -10,4 +11,6 @@ __all__ = [
     'HierarchicalDQNRobotAgent',
     'QueryAugmentedRobotAgent',
     'PreferenceBeliefs',
+    'BeliefBasedRobotAgent',
+    'GaussianBeliefState',
 ]

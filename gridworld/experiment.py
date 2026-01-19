@@ -9,11 +9,12 @@ from .environment import GridWorld
 from .agents.human import HumanAgent
 from .agents.hierarchical_dqn_robot import HierarchicalDQNRobotAgent
 from .agents.query_augmented_robot import QueryAugmentedRobotAgent
+from .agents.belief_based_robot import BeliefBasedRobotAgent
 from .objects import PROPERTY_CATEGORIES
 from tqdm import tqdm
 
 # Type alias for robot agents
-RobotAgent = Union[HierarchicalDQNRobotAgent, QueryAugmentedRobotAgent]
+RobotAgent = Union[HierarchicalDQNRobotAgent, QueryAugmentedRobotAgent, BeliefBasedRobotAgent]
 
 
 @dataclass
@@ -55,6 +56,13 @@ class ExperimentConfig:
     query_threshold: float = 0.8
     blend_factor: float = 0.5
     llm_model: str = "gpt-4o-mini"
+
+    # Belief-based agent parameters
+    use_belief_based_agent: bool = False
+    participation_ratio_threshold: float = 3.0
+    plackett_luce_learning_rate: float = 0.1
+    plackett_luce_gradient_steps: int = 5
+    linear_gaussian_noise_variance: float = 1.0
 
     # Random seed
     seed: Optional[int] = None
@@ -123,13 +131,18 @@ def run_episode(
 
     robot.reset()
 
-    # If using query-augmented agent, set up human responder
+    # If using query-augmented agent or belief-based agent, set up human responder
     if isinstance(robot, QueryAugmentedRobotAgent) and not training:
         robot.set_human_responder(
             human_obs['reward_properties'],
             property_value_rewards=human_obs.get('property_value_rewards')
         )
-    
+    elif isinstance(robot, BeliefBasedRobotAgent) and not training:
+        robot.set_human_responder(
+            human_obs['reward_properties'],
+            property_value_rewards=human_obs.get('property_value_rewards')
+        )
+
     # For verbose output during evaluation, set reward properties on base agent
     if not training and hasattr(robot, 'set_reward_properties_for_verbose'):
         robot.set_reward_properties_for_verbose(human_obs['reward_properties'])
@@ -186,6 +199,11 @@ def run_episode(
 
     # Query statistics
     if isinstance(robot, QueryAugmentedRobotAgent):
+        stats = robot.get_query_stats()
+        result.queries_used = stats['queries_used']
+        result.query_history = stats['query_history']
+        result.entropy_history = stats.get('entropy_history', [])
+    elif isinstance(robot, BeliefBasedRobotAgent):
         stats = robot.get_query_stats()
         result.queries_used = stats['queries_used']
         result.query_history = stats['query_history']
@@ -248,6 +266,53 @@ def get_model_path(config: ExperimentConfig, model_dir: str) -> str:
         f"seed{config.seed}.pt"
     )
     return os.path.join(model_dir, model_name)
+
+
+def create_belief_based_agent(
+    config: ExperimentConfig,
+    env: GridWorld,
+    api_key: Optional[str] = None,
+    verbose: bool = False
+) -> BeliefBasedRobotAgent:
+    """
+    Create a belief-based robot agent.
+
+    Args:
+        config: Experiment configuration
+        env: GridWorld environment (for getting active categories)
+        api_key: OpenAI API key for queries (optional)
+        verbose: Whether to print debug info
+
+    Returns:
+        BeliefBasedRobotAgent
+    """
+    from .llm_interface import LLMInterface
+
+    llm_interface = None
+    if config.allow_queries and api_key:
+        try:
+            llm_interface = LLMInterface(api_key=api_key, model=config.llm_model)
+        except Exception as e:
+            print(f"Warning: Could not initialize LLM interface: {e}")
+            print("Running without queries.")
+
+    # Use all 5 categories to handle variable property counts
+    all_categories = PROPERTY_CATEGORIES[:5]
+
+    return BeliefBasedRobotAgent(
+        grid_size=config.grid_size,
+        num_objects=config.num_objects,
+        active_categories=all_categories,
+        num_property_values=config.num_property_values,
+        llm_interface=llm_interface,
+        query_budget=config.query_budget,
+        participation_ratio_threshold=config.participation_ratio_threshold,
+        plackett_luce_learning_rate=config.plackett_luce_learning_rate,
+        plackett_luce_gradient_steps=config.plackett_luce_gradient_steps,
+        linear_gaussian_noise_variance=config.linear_gaussian_noise_variance,
+        verbose=verbose,
+        seed=config.seed
+    )
 
 
 def create_query_augmented_agent(
@@ -437,6 +502,11 @@ def run_variable_property_experiment(
             query_threshold=config.query_threshold,
             blend_factor=config.blend_factor,
             llm_model=config.llm_model,
+            use_belief_based_agent=config.use_belief_based_agent,
+            participation_ratio_threshold=config.participation_ratio_threshold,
+            plackett_luce_learning_rate=config.plackett_luce_learning_rate,
+            plackett_luce_gradient_steps=config.plackett_luce_gradient_steps,
+            linear_gaussian_noise_variance=config.linear_gaussian_noise_variance,
             seed=seed
         )
 
@@ -451,51 +521,69 @@ def run_variable_property_experiment(
             seed=seed
         )
 
-        base_robot = create_robot_agent(current_config, env, verbose=True)
-
-        # Check if model exists and should be loaded
-        model_exists = False
-        model_path = None
-        if model_dir is not None:
-            os.makedirs(model_dir, exist_ok=True)
-            model_path = get_model_path(current_config, model_dir)
-            model_exists = os.path.exists(model_path)
-        
-        if model_exists:
+        # Use belief-based agent if configured (no training needed)
+        if current_config.use_belief_based_agent:
             if verbose:
-                print(f"\nLoading existing model from: {model_path}")
-            base_robot.load(model_path)
-            # Create dummy training rewards for compatibility
-            train_rewards = [0.0] * current_config.num_train_episodes
-        else:
-            if verbose:
-                if model_path:
-                    print(f"\nNo existing model found at: {model_path}")
-                print("Training with variable property counts...")
+                print("\nUsing Belief-Based Agent (no training phase)")
+                print(f"  Participation ratio threshold: {current_config.participation_ratio_threshold}")
+                print(f"  Plackett-Luce learning rate: {current_config.plackett_luce_learning_rate}")
+                print(f"  Linear-Gaussian noise variance: {current_config.linear_gaussian_noise_variance}")
+                if current_config.allow_queries:
+                    print(f"  Query budget: {current_config.query_budget}")
 
-            train_rewards = run_training(
-                current_config,
-                base_robot,
-                property_counts,
-                verbose=verbose
+            eval_robot = create_belief_based_agent(
+                current_config, env, api_key, verbose=True
             )
-            
-            # Save the trained model
-            if model_path is not None:
-                if verbose:
-                    print(f"\nSaving trained model to: {model_path}")
-                base_robot.save(model_path)
+            # No training for belief-based agent - dummy rewards
+            train_rewards = [0.0] * current_config.num_train_episodes
 
-        # Wrap with query augmentation if enabled
-        if current_config.allow_queries:
-            eval_robot = create_query_augmented_agent(base_robot, current_config, api_key)
-            if verbose:
-                print(f"\nQuery augmentation enabled:")
-                print(f"  Budget: {current_config.query_budget}")
-                print(f"  Query threshold: {current_config.query_threshold}")
-                print(f"  Blend factor: {current_config.blend_factor}")
         else:
-            eval_robot = base_robot
+            # DQN-based agent with training
+            base_robot = create_robot_agent(current_config, env, verbose=True)
+
+            # Check if model exists and should be loaded
+            model_exists = False
+            model_path = None
+            if model_dir is not None:
+                os.makedirs(model_dir, exist_ok=True)
+                model_path = get_model_path(current_config, model_dir)
+                model_exists = os.path.exists(model_path)
+
+            if model_exists:
+                if verbose:
+                    print(f"\nLoading existing model from: {model_path}")
+                base_robot.load(model_path)
+                # Create dummy training rewards for compatibility
+                train_rewards = [0.0] * current_config.num_train_episodes
+            else:
+                if verbose:
+                    if model_path:
+                        print(f"\nNo existing model found at: {model_path}")
+                    print("Training with variable property counts...")
+
+                train_rewards = run_training(
+                    current_config,
+                    base_robot,
+                    property_counts,
+                    verbose=verbose
+                )
+
+                # Save the trained model
+                if model_path is not None:
+                    if verbose:
+                        print(f"\nSaving trained model to: {model_path}")
+                    base_robot.save(model_path)
+
+            # Wrap with query augmentation if enabled
+            if current_config.allow_queries:
+                eval_robot = create_query_augmented_agent(base_robot, current_config, api_key)
+                if verbose:
+                    print(f"\nQuery augmentation enabled:")
+                    print(f"  Budget: {current_config.query_budget}")
+                    print(f"  Query threshold: {current_config.query_threshold}")
+                    print(f"  Blend factor: {current_config.blend_factor}")
+            else:
+                eval_robot = base_robot
 
         # Evaluate
         result = VariableExperimentResult(
@@ -523,25 +611,40 @@ def run_variable_property_experiment(
             result.eval_queries_per_property[num_props] = eval_queries
             result.eval_avg_queries_per_property[num_props] = np.mean(eval_queries)
             
-            # Collect entropy statistics
-            if current_config.allow_queries:
+            # Collect entropy/uncertainty statistics
+            if current_config.allow_queries or current_config.use_belief_based_agent:
                 all_entropy_history = []
                 for r in eval_results:
                     all_entropy_history.extend(r.entropy_history)
-                
+
                 if all_entropy_history:
-                    num_competitive_values = [h['num_competitive'] for h in all_entropy_history]
                     num_decision_points = len(all_entropy_history)
                     num_triggered = sum(1 for h in all_entropy_history if h['should_query'])
-                    
-                    result.eval_entropy_stats_per_property[num_props] = {
-                        'mean_num_competitive': np.mean(num_competitive_values),
-                        'std_num_competitive': np.std(num_competitive_values),
-                        'num_decision_points': num_decision_points,
-                        'num_triggered': num_triggered,
-                        'trigger_rate': num_triggered / num_decision_points if num_decision_points > 0 else 0,
-                        'sample_decision_points': all_entropy_history[:5]  # Keep first 5 for debugging
-                    }
+
+                    # Handle both formats: QueryAugmented uses 'num_competitive',
+                    # BeliefBased uses 'participation_ratio'
+                    if 'num_competitive' in all_entropy_history[0]:
+                        # Query-augmented agent format
+                        num_competitive_values = [h['num_competitive'] for h in all_entropy_history]
+                        result.eval_entropy_stats_per_property[num_props] = {
+                            'mean_num_competitive': np.mean(num_competitive_values),
+                            'std_num_competitive': np.std(num_competitive_values),
+                            'num_decision_points': num_decision_points,
+                            'num_triggered': num_triggered,
+                            'trigger_rate': num_triggered / num_decision_points if num_decision_points > 0 else 0,
+                            'sample_decision_points': all_entropy_history[:5]
+                        }
+                    elif 'participation_ratio' in all_entropy_history[0]:
+                        # Belief-based agent format
+                        pr_values = [h['participation_ratio'] for h in all_entropy_history]
+                        result.eval_entropy_stats_per_property[num_props] = {
+                            'mean_participation_ratio': np.mean(pr_values),
+                            'std_participation_ratio': np.std(pr_values),
+                            'num_decision_points': num_decision_points,
+                            'num_triggered': num_triggered,
+                            'trigger_rate': num_triggered / num_decision_points if num_decision_points > 0 else 0,
+                            'sample_decision_points': all_entropy_history[:5]
+                        }
 
             if verbose:
                 query_info = f", avg queries={result.eval_avg_queries_per_property[num_props]:.2f}" if current_config.allow_queries else ""
