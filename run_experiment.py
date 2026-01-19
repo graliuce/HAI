@@ -30,6 +30,7 @@ from gridworld.experiment import (
     summarize_variable_results,
     render_episode_gif,
 )
+from gridworld.agents.query_augmented_robot import QueryAugmentedRobotAgent
 
 
 def load_dotenv(path=".env"):
@@ -132,8 +133,8 @@ def parse_args():
         help="Blend factor for beliefs vs Q-values (default: 0.5)"
     )
     parser.add_argument(
-        "--llm-model", type=str, default="gpt-4o-mini",
-        help="LLM model for queries (default: gpt-4o-mini)"
+        "--llm-model", type=str, default="gpt-5-chat-latest",
+        help="LLM model for queries (default: gpt-5-chat-latest)"
     )
     parser.add_argument(
         "--api-key", type=str, default=None,
@@ -468,6 +469,7 @@ def main():
 
         from gridworld.environment import GridWorld
         from gridworld.experiment import create_robot_agent, get_model_path
+        from gridworld.llm_interface import LLMInterface
 
         # Create environment and robot
         env = GridWorld(
@@ -480,16 +482,32 @@ def main():
             additive_valuation=config.additive_valuation,
             seed=config.seed
         )
-        robot = create_robot_agent(config, env, verbose=False)
+        base_robot = create_robot_agent(config, env, verbose=False)
 
         # Load trained model
         model_path = get_model_path(config, args.model_dir)
         if os.path.exists(model_path):
             print(f"Loading model from: {model_path}")
-            robot.load(model_path)
+            base_robot.load(model_path)
         else:
             print(f"WARNING: No trained model found at {model_path}")
             print("GIFs will use untrained agent behavior.")
+
+        # Wrap in QueryAugmentedRobotAgent if queries are enabled
+        if config.allow_queries:
+            print("Setting up query-augmented robot for GIF generation...")
+            llm = LLMInterface(model=config.llm_model, api_key=api_key)
+            robot = QueryAugmentedRobotAgent(
+                base_agent=base_robot,
+                llm_interface=llm,
+                query_budget=config.query_budget,
+                blend_factor=config.blend_factor,
+                query_threshold=config.query_threshold,
+                verbose=True  # Enable verbose mode for detailed logging
+            )
+            print("Verbose mode enabled for query logging during GIF generation.")
+        else:
+            robot = base_robot
 
         # Render GIFs
         render_episode_gifs(property_counts, args.output_dir, config, robot)

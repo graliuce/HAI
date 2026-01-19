@@ -17,46 +17,46 @@
     "query_budget": 5,
     "query_threshold": 2.0,
     "blend_factor": 0.5,
-    "llm_model": "gpt-4o-mini",
+    "llm_model": "gpt-5-chat-latest",
     "num_seeds": 1,
     "base_seed": 43
   },
   "summary": {
     "1": {
-      "eval_mean": 2.6372344536706267,
+      "eval_mean": 2.367842665331281,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 0.87
+      "avg_queries": 0.83
     },
     "2": {
-      "eval_mean": 2.609246960387304,
+      "eval_mean": 2.685476675238115,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 1.51
+      "avg_queries": 1.0
     },
     "3": {
-      "eval_mean": 2.1290173984252756,
+      "eval_mean": 1.752215798721359,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 1.93
+      "avg_queries": 1.69
     },
     "4": {
-      "eval_mean": 1.5376371909672388,
+      "eval_mean": 1.575832090630894,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 2.25
+      "avg_queries": 1.67
     },
     "5": {
-      "eval_mean": 1.0057243967237208,
+      "eval_mean": 0.9641723316074738,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 2.27
+      "avg_queries": 1.99
     },
     "training": {
       "train_mean": 0.0,
       "train_std": 0.0
     }
   },
-  "correlation": -0.9704807272723696,
-  "timestamp": "2026-01-07T12:43:16.776826"
+  "correlation": -0.9146999455212187,
+  "timestamp": "2026-01-10T17:44:57.004746"
 }

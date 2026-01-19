@@ -643,20 +643,38 @@ def render_episode_gif(
             human_obs['reward_properties'],
             property_value_rewards=human_obs.get('property_value_rewards')
         )
+        # Enable verbose mode for detailed logging during GIF generation
+        if config.allow_queries:
+            robot.verbose = True
 
     frames = []
-    frames.append(vis_env.render_to_array())
+    
+    # Track query information for display
+    current_query_info = None
+    prev_query_count = 0
+    
+    frames.append(vis_env.render_to_array(query_info=current_query_info))
 
     step = 0
     while not vis_env.done and step < max_steps:
         human_action = human.get_action(human_obs)
         robot_action = robot.get_action(observation, training=False)
+        
+        # If a new query was made, update the display info
+        if isinstance(robot, QueryAugmentedRobotAgent) and robot.queries_used > prev_query_count:
+            prev_query_count = robot.queries_used
+            if robot.query_history:
+                last_query = robot.query_history[-1]
+                current_query_info = {
+                    'weights': last_query['weights'],
+                    'query_num': robot.queries_used
+                }
 
         vis_env.human_position = vis_env._apply_action(vis_env.human_position, human_action)
         observation, _, _, _ = vis_env.step(robot_action)
         human_obs = vis_env.get_human_observation()
 
-        frames.append(vis_env.render_to_array())
+        frames.append(vis_env.render_to_array(query_info=current_query_info))
         step += 1
 
     # Restore epsilon

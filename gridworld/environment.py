@@ -122,13 +122,36 @@ class GridWorld:
         return self._get_robot_observation()
 
     def _sample_property_value_rewards(self):
-        """Sample Gaussian rewards for each property value in active categories."""
+        """Sample Gaussian rewards for each property value in active categories.
+        
+        For ordinal properties (size, opacity), imposes linear structure where
+        adjacent values have similar rewards. For other properties, samples independently.
+        """
         self.property_value_rewards = {}
+        
+        # Properties with natural ordinal structure
+        ordinal_properties = ['size', 'opacity']
+        
         for category in self.active_categories:
             values = get_property_values(category, self.num_property_values)
-            for value in values:
-                # Sample from standard Gaussian
-                self.property_value_rewards[value] = self.np_rng.randn()
+            
+            if category in ordinal_properties:
+                # For ordinal properties, sample a slope and create linear structure
+                # The slope determines the strength and direction of preference
+                slope = self.np_rng.randn()
+                
+                # Create linearly spaced rewards centered at 0
+                n = len(values)
+                for i, value in enumerate(values):
+                    # Map index to [-1, 1] range, then scale by slope
+                    # This keeps expected value at 0 and creates monotonic structure
+                    position = 2 * (i / (n - 1)) - 1 if n > 1 else 0
+                    self.property_value_rewards[value] = slope * position
+            else:
+                # For non-ordinal properties (color, shape, pattern),
+                # sample independently from standard Gaussian
+                for value in values:
+                    self.property_value_rewards[value] = self.np_rng.randn()
 
     def get_object_reward(self, obj: GridObject) -> float:
         """
@@ -653,9 +676,13 @@ class GridWorld:
 
         return fig
 
-    def render_to_array(self) -> np.ndarray:
+    def render_to_array(self, query_info: dict = None) -> np.ndarray:
         """
         Render the environment to a numpy array for GIF generation.
+
+        Args:
+            query_info: Optional dictionary with query information to display
+                       Keys: 'weights' (dict), 'query_num' (int)
 
         Returns:
             numpy array of shape (height, width, 3) with RGB values
@@ -693,7 +720,8 @@ class GridWorld:
             'opaque': 1.0
         }
 
-        fig, ax = plt.subplots(figsize=(8, 8))
+        # Use wider figure to accommodate side panels for rewards (left) and queries (right)
+        fig, ax = plt.subplots(figsize=(14, 8))
 
         # Draw grid
         for i in range(self.grid_size + 1):
@@ -799,6 +827,53 @@ class GridWorld:
             f'{reward_info}  |  {reward_display}'
         ]
         ax.set_title('\n'.join(title_lines), fontsize=10, pad=5)
+
+        # Add true reward values on the left side
+        if self.additive_valuation and hasattr(self, 'property_value_rewards'):
+            # Get property value rewards
+            prop_rewards = self.property_value_rewards
+            sorted_rewards = sorted(prop_rewards.items(), key=lambda x: x[1], reverse=True)
+            
+            # Create text showing top positive and negative rewards
+            reward_text = "Property Rewards:\n" + "-" * 20 + "\n"
+            for prop, reward in sorted_rewards[:8]:  # Show top 8
+                sign = "+" if reward >= 0 else ""
+                reward_text += f"{prop:12s} {sign}{reward:.2f}\n"
+            
+            # Add text box on the left side
+            fig.text(
+                0.02, 0.5, reward_text,
+                fontsize=9,
+                verticalalignment='center',
+                horizontalalignment='left',
+                bbox=dict(boxstyle='round', facecolor='none', edgecolor='gray', linewidth=2),
+                family='monospace'
+            )
+
+        # Add query information on the right side (always show if query has been made)
+        if query_info:
+            weights = query_info.get('weights', {})
+            query_num = query_info.get('query_num', 0)
+            
+            # Filter to show only non-zero weights, sorted by absolute value
+            non_zero_weights = {k: v for k, v in weights.items() if abs(v) > 0.01}
+            sorted_weights = sorted(non_zero_weights.items(), key=lambda x: abs(x[1]), reverse=True)
+            
+            # Create text for top weights
+            query_text = f"Query {query_num}:\n" + "-" * 20 + "\n"
+            for i, (prop, weight) in enumerate(sorted_weights[:8]):  # Show up to 8
+                sign = "+" if weight > 0 else ""
+                query_text += f"{prop:12s} {sign}{weight:.2f}\n"
+            
+            # Add text box on the right side
+            fig.text(
+                0.98, 0.5, query_text,
+                fontsize=9,
+                verticalalignment='center',
+                horizontalalignment='right',
+                bbox=dict(boxstyle='round', facecolor='none', edgecolor='gray', linewidth=2),
+                family='monospace'
+            )
 
         # Convert to array
         fig.canvas.draw()

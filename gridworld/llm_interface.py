@@ -9,7 +9,7 @@ import numpy as np
 class LLMInterface:
     """Interface for LLM query generation and interpretation."""
     
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o-mini"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-5-chat-latest"):
         """
         Initialize LLM interface.
         
@@ -95,8 +95,7 @@ Current situation:
 - Properties on the board: {board_props_str}
 - Properties the human has collected so far: {collected_props_str}
 
-Generate a brief, natural open-ended question (1-2 sentences) to ask the human about what properties they like or value.
-The question should help the robot understand what kinds of objects are rewarding to collect.
+Generate a brief, informative question to the human that will help the robot decide which objects to collect.s
 
 Output only the question, nothing else."""
 

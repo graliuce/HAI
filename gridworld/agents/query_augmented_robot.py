@@ -442,26 +442,36 @@ class QueryAugmentedRobotAgent:
     def _print_decision_summary(self, observation: dict, query_triggered: bool, query_info: dict):
         """Print a concise summary of the high-level decision."""
         print("\n" + "="*80)
-        print("HIGH-LEVEL DECISION")
+        print("HIGH-LEVEL DECISION POINT")
         print("="*80)
         
-        # Print rewarding properties
+        # Print rewarding properties and their rewards
         if self.human_responder is not None:
             rewarding_props = sorted(list(self.human_responder.reward_properties))
             print(f"True Rewarding Properties: {rewarding_props}")
+            
+            # Print property value rewards if available (for additive valuation mode)
+            if hasattr(self.human_responder, 'property_value_rewards') and self.human_responder.property_value_rewards:
+                print("\nProperty Value Rewards (Human Observable):")
+                sorted_prop_rewards = sorted(self.human_responder.property_value_rewards.items(), 
+                                           key=lambda x: abs(x[1]), reverse=True)
+                for prop_val, reward in sorted_prop_rewards:
+                    if reward != 0:
+                        print(f"  {prop_val}: {reward:+.3f}")
         
         # Print observation stats
         total_observed = sum(self.beliefs.observed_counts.values())
-        print(f"Human objects collected: {total_observed}")
+        print(f"\nHuman objects collected: {total_observed}")
         print(f"Queries used: {self.queries_used}/{self.query_budget}")
         
         # Get competitive options info
+        num_competitive = 0
         if hasattr(self, 'entropy_history') and self.entropy_history:
             last_info = self.entropy_history[-1]
             num_competitive = last_info['num_competitive']
             print(f"Competitive options: {num_competitive} (query if > {self.query_threshold})")
         
-        # Print Q-values table
+        # Print Q-values BEFORE blending
         if hasattr(self, '_last_blend_info'):
             info = self._last_blend_info
             valid_actions = info['valid_actions']
@@ -472,14 +482,14 @@ class QueryAugmentedRobotAgent:
             if self.human_responder is not None:
                 rewarding_set = self.human_responder.reward_properties
             
-            print(f"\n{'Action':<15} {'Property':<15} {'Q-value':<12} {'Observed':<12} {'R?'}")
+            print(f"\n{'Action':<10} {'Property':<15} {'Q-value':<12} {'Observed':<12} {'Rewarding?'}")
             print("-" * 65)
             for i, action_idx in enumerate(valid_actions):
                 prop = self.base_agent.property_values[action_idx]
                 q_val = q_values[i]
                 obs_count = self.beliefs.observed_counts.get(prop, 0)
                 is_rewarding = "✓" if prop in rewarding_set else ""
-                print(f"{action_idx:<15} {prop:<15} {q_val:.4f}       {obs_count:<12} {is_rewarding}")
+                print(f"{action_idx:<10} {prop:<15} {q_val:.4f}       {obs_count:<12} {is_rewarding}")
         
         # If query was triggered
         if query_triggered:
@@ -487,22 +497,23 @@ class QueryAugmentedRobotAgent:
             print("QUERY TRIGGERED!")
             print("-"*80)
             if query_info:
-                print(f"True rewarding properties: {query_info['rewarding_properties']}")
-                print(f"Human response: {query_info['response']}")
-                print(f"\nExtracted weights (top 5):")
+                print(f"\nLLM Query: {query_info.get('query', 'N/A')}")
+                print(f"\nHuman Response: {query_info['response']}")
+                print(f"\nExtracted Weights from LLM:")
                 weights = query_info['weights']
-                sorted_weights = sorted(weights.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
+                sorted_weights = sorted(weights.items(), key=lambda x: abs(x[1]), reverse=True)
                 for prop, weight in sorted_weights:
                     if weight != 0:
-                        print(f"  {prop}: {weight:+.3f}")
+                        is_correct = "✓" if prop in rewarding_set else "✗"
+                        print(f"  {prop}: {weight:+.3f} {is_correct}")
         else:
             print(f"\nQuery NOT triggered (competitive options {num_competitive} <= {self.query_threshold})")
         
-        # Print blended decision
+        # Print Q-values AFTER blending
         if hasattr(self, '_last_blend_info'):
             info = self._last_blend_info
             print("\n" + "-"*80)
-            print("BLENDED DECISION")
+            print("Q-VALUES BEFORE AND AFTER BLENDING")
             print("-"*80)
             
             # Get rewarding properties set for marking
@@ -512,10 +523,10 @@ class QueryAugmentedRobotAgent:
             
             # Show if blending is active
             has_queries = self.beliefs.has_queries
-            blend_status = f"Blending ACTIVE (query weights used)" if has_queries else "Blending INACTIVE (no queries yet, using Q-values only)"
+            blend_status = f"Blending ACTIVE (blend_factor={self.blend_factor})" if has_queries else "Blending INACTIVE (no queries yet, using Q-values only)"
             print(f"{blend_status}")
             
-            print(f"\n{'Action':<15} {'Property':<15} {'Q-prob':<12} {'LLM Weight':<12} {'Blended':<12} {'R?'}")
+            print(f"\n{'Action':<10} {'Property':<15} {'Q-before':<12} {'LLM Weight':<12} {'Q-after':<12} {'R?'}")
             print("-" * 80)
             
             valid_actions = info['valid_actions']
@@ -530,12 +541,12 @@ class QueryAugmentedRobotAgent:
                 belief = belief_scores[i]
                 blend = blended[i]
                 is_rewarding = "✓" if prop in rewarding_set else ""
-                marker = " <--" if action_idx == info['selected_action'] else ""
-                print(f"{action_idx:<15} {prop:<15} {q_prob:.4f}      {belief:+.4f}       {blend:.4f}      {is_rewarding}{marker}")
+                marker = " <-- SELECTED" if action_idx == info['selected_action'] else ""
+                print(f"{action_idx:<10} {prop:<15} {q_prob:.4f}      {belief:+.4f}       {blend:.4f}      {is_rewarding}{marker}")
             
             selected_prop = self.base_agent.property_values[info['selected_action']]
             is_selected_rewarding = "✓ (CORRECT)" if selected_prop in rewarding_set else "✗ (WRONG)"
-            print(f"\nSelected: Action {info['selected_action']} (property: {selected_prop}) {is_selected_rewarding}")
+            print(f"\nTarget Property Chosen by High-Level Policy: {selected_prop} (Action {info['selected_action']}) {is_selected_rewarding}")
             print("="*80 + "\n")
     
     def _set_target(self, observation: dict, target_action: int):
@@ -603,6 +614,7 @@ class QueryAugmentedRobotAgent:
                         last_query = self.query_history[-1]
                         query_info = {
                             'rewarding_properties': self.human_responder.reward_properties,
+                            'query': last_query['query'],
                             'response': last_query['response'],
                             'weights': last_query['weights']
                         }
