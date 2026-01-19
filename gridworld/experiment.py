@@ -129,7 +129,12 @@ def run_episode(
     )
     result.reward_properties = human_obs['reward_properties']
 
-    robot.reset()
+    # Reset robot - for belief-based agent, pass active categories so it
+    # initializes the correct dimensionality belief state
+    if isinstance(robot, BeliefBasedRobotAgent):
+        robot.reset(active_categories=observation.get('active_categories'))
+    else:
+        robot.reset()
 
     # If using query-augmented agent or belief-based agent, set up human responder
     if isinstance(robot, QueryAugmentedRobotAgent) and not training:

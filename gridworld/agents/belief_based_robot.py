@@ -180,17 +180,29 @@ class GaussianBeliefState:
             # Update mean
             self.mean = self.mean + learning_rate * gradient
 
-        # Update covariance using a simple decay + information gain approximation
-        # The information matrix is approximately the outer product of the gradient
-        # We use a rank-1 update that reduces uncertainty along the gradient direction
-        info_direction = gradient / (np.linalg.norm(gradient) + 1e-10)
-        info_matrix = np.outer(info_direction, info_direction)
+        # Update covariance using Fisher information approximation
+        # The Fisher information for Plackett-Luce is related to the Hessian of log-likelihood
+        # We approximate it with a rank-1 update based on the observed information
 
-        # Reduce covariance along the direction of information
-        info_gain = 0.1  # How much we reduce uncertainty per observation
-        self.covariance = self.covariance - info_gain * np.dot(
-            np.dot(self.covariance, info_matrix), self.covariance
-        )
+        # Compute approximate Fisher information from the choice
+        # For each alternative, compute its contribution to the information matrix
+        fisher_info = np.zeros((self.num_features, self.num_features))
+        for p, f, d in zip(probs, all_features, all_distances):
+            weighted_f = f / d
+            # Contribution is p * (1-p) * outer(f/d, f/d) but simplified
+            fisher_info += p * np.outer(weighted_f, weighted_f)
+
+        # Subtract the expected outer product squared
+        expected_f = sum(p * (f / d) for p, f, d in zip(probs, all_features, all_distances))
+        fisher_info -= np.outer(expected_f, expected_f)
+
+        # Scale the information gain (higher = faster uncertainty reduction)
+        info_gain = 0.5  # Increased from 0.1
+
+        # Update covariance: Sigma_new = Sigma - info_gain * Sigma @ Fisher @ Sigma
+        # This is the standard Bayesian update approximation
+        update = info_gain * self.covariance @ fisher_info @ self.covariance
+        self.covariance = self.covariance - update
 
         # Ensure covariance stays positive definite with minimum eigenvalue
         eigenvalues, eigenvectors = np.linalg.eigh(self.covariance)
@@ -358,10 +370,32 @@ class BeliefBasedRobotAgent:
         # True reward properties (for verbose output)
         self.true_reward_properties: Optional[Set[str]] = None
 
-    def reset(self):
-        """Reset for a new episode."""
-        # Initialize prior belief N(0, I)
+    def reset(self, active_categories: List[str] = None):
+        """
+        Reset for a new episode.
+
+        Args:
+            active_categories: If provided, update the feature space to match
+                              the environment's active categories for this episode.
+        """
+        # Update active categories if provided (for per-episode adaptation)
+        if active_categories is not None:
+            self.active_categories = active_categories
+            # Rebuild feature list for the new active categories
+            self.feature_names = []
+            for category in self.active_categories:
+                for value in PROPERTY_VALUES[category][:self.num_property_values]:
+                    self.feature_names.append(value)
+            self.property_values = self.feature_names.copy()
+
+        # Initialize prior belief N(0, I) with correct dimensionality
         self.belief = GaussianBeliefState.create_prior(self.feature_names)
+
+        if self.verbose:
+            print(f"\n[Belief Reset]")
+            print(f"  Active Categories: {self.active_categories}")
+            print(f"  Number of Features: {len(self.feature_names)}")
+            print(f"  Initial Participation Ratio: {self.belief.compute_participation_ratio():.3f}")
 
         # Reset target tracking
         self.current_target_object_id = None
@@ -620,10 +654,12 @@ class BeliefBasedRobotAgent:
         )
 
         if self.verbose:
+            pr_after = self.belief.compute_participation_ratio()
             print(f"\n[Belief Update - Plackett-Luce]")
             print(f"  Human collected object with properties: {chosen_object['properties']}")
             print(f"  Distance to chosen: {chosen_distance:.2f}")
             print(f"  Number of alternatives: {len(all_objects_props) - 1}")
+            print(f"  Participation Ratio after update: {pr_after:.3f}")
             print(f"  Updated mean weights (top 5):")
             weights = self.belief.get_expected_weights()
             sorted_weights = sorted(weights.items(), key=lambda x: x[1], reverse=True)
@@ -777,7 +813,9 @@ class BeliefBasedRobotAgent:
 
         # Print belief state summary
         print(f"\nBelief State:")
-        print(f"  Participation Ratio: {self.belief.compute_participation_ratio():.3f}")
+        print(f"  Active Categories: {self.active_categories}")
+        print(f"  Number of Features: {len(self.feature_names)}")
+        print(f"  Participation Ratio: {self.belief.compute_participation_ratio():.3f} (max={len(self.feature_names)})")
         print(f"  Query Threshold: {self.pr_threshold}")
         print(f"  Queries Used: {self.queries_used}/{self.query_budget}")
 
