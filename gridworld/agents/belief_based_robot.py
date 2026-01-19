@@ -181,32 +181,50 @@ class GaussianBeliefState:
             self.mean = self.mean + learning_rate * gradient
 
         # Update covariance using Fisher information approximation
-        # The Fisher information for Plackett-Luce is related to the Hessian of log-likelihood
-        # We approximate it with a rank-1 update based on the observed information
+        # The Fisher information for Plackett-Luce is the covariance of the score function
 
-        # Compute approximate Fisher information from the choice
-        # For each alternative, compute its contribution to the information matrix
+        # Compute Fisher information matrix
+        # Fisher = E[outer(weighted_features)] - outer(E[weighted_features])
+        # This is the variance of weighted features under the choice distribution
         fisher_info = np.zeros((self.num_features, self.num_features))
         for p, f, d in zip(probs, all_features, all_distances):
             weighted_f = f / d
-            # Contribution is p * (1-p) * outer(f/d, f/d) but simplified
             fisher_info += p * np.outer(weighted_f, weighted_f)
 
-        # Subtract the expected outer product squared
         expected_f = sum(p * (f / d) for p, f, d in zip(probs, all_features, all_distances))
         fisher_info -= np.outer(expected_f, expected_f)
 
-        # Scale the information gain (higher = faster uncertainty reduction)
-        info_gain = 0.5  # Increased from 0.1
+        # The raw Fisher info can be very small because:
+        # 1. Features are sparse binary vectors divided by distances (often 2-10)
+        # 2. Probabilities are spread across many alternatives
+        #
+        # To make info_gain interpretable, we normalize the Fisher info
+        # so that one observation reduces variance by approximately info_gain fraction
+        # along the direction of maximum information
 
-        # Update covariance: Sigma_new = Sigma - info_gain * Sigma @ Fisher @ Sigma
-        # This is the standard Bayesian update approximation
-        update = info_gain * self.covariance @ fisher_info @ self.covariance
+        fisher_trace = np.trace(fisher_info)
+        if fisher_trace > 1e-10:
+            # Normalize so trace equals 1, then info_gain directly controls reduction rate
+            normalized_fisher = fisher_info / fisher_trace
+        else:
+            normalized_fisher = fisher_info
+
+        # info_gain interpretation after normalization:
+        # - info_gain = 0.3: Each observation reduces variance by ~30% along info direction
+        # - info_gain = 0.5: Each observation reduces variance by ~50% along info direction
+        # - info_gain = 0.8: Each observation reduces variance by ~80% along info direction
+        #
+        # Reasonable values: 0.3 to 0.8 for gradual learning
+
+        # Update: Σ_new = Σ - info_gain * Σ @ normalized_Fisher @ Σ
+        update = self.pl_info_gain * self.covariance @ normalized_fisher @ self.covariance
         self.covariance = self.covariance - update
 
-        # Ensure covariance stays positive definite with minimum eigenvalue
+        # Ensure covariance stays positive definite
+        # Use a very small floor to allow eigenvalues to shrink significantly
         eigenvalues, eigenvectors = np.linalg.eigh(self.covariance)
-        eigenvalues = np.maximum(eigenvalues, 0.01)  # Minimum variance
+        min_eigenvalue = 0.001  # Allow shrinking to 0.1% of original variance
+        eigenvalues = np.maximum(eigenvalues, min_eigenvalue)
         self.covariance = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
 
     def update_from_linear_gaussian(
@@ -299,6 +317,7 @@ class BeliefBasedRobotAgent:
         participation_ratio_threshold: float = 3.0,
         plackett_luce_learning_rate: float = 0.1,
         plackett_luce_gradient_steps: int = 5,
+        plackett_luce_info_gain: float = 0.5,
         linear_gaussian_noise_variance: float = 1.0,
         verbose: bool = False,
         seed: Optional[int] = None
@@ -312,8 +331,14 @@ class BeliefBasedRobotAgent:
             llm_interface: Interface to LLM for queries
             query_budget: Maximum queries per episode
             participation_ratio_threshold: Trigger query when PR > this value
-            plackett_luce_learning_rate: Learning rate for Plackett-Luce updates
+            plackett_luce_learning_rate: Learning rate for Plackett-Luce mean updates
             plackett_luce_gradient_steps: Number of gradient steps per observation
+            plackett_luce_info_gain: Controls covariance reduction rate per observation.
+                After normalization, this is approximately the fraction of variance
+                reduced along the direction of maximum information per observation.
+                - 0.3: Gradual learning (30% reduction per observation)
+                - 0.5: Moderate learning (50% reduction per observation)
+                - 0.8: Aggressive learning (80% reduction per observation)
             linear_gaussian_noise_variance: Observation noise for linear-Gaussian updates
             verbose: Print debug information
             seed: Random seed
@@ -327,6 +352,7 @@ class BeliefBasedRobotAgent:
         self.pr_threshold = participation_ratio_threshold
         self.pl_learning_rate = plackett_luce_learning_rate
         self.pl_gradient_steps = plackett_luce_gradient_steps
+        self.pl_info_gain = plackett_luce_info_gain
         self.lg_noise_variance = linear_gaussian_noise_variance
         self.verbose = verbose
 

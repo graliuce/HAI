@@ -62,6 +62,7 @@ class ExperimentConfig:
     participation_ratio_threshold: float = 3.0
     plackett_luce_learning_rate: float = 0.1
     plackett_luce_gradient_steps: int = 5
+    plackett_luce_info_gain: float = 0.5
     linear_gaussian_noise_variance: float = 1.0
 
     # Random seed
@@ -314,6 +315,7 @@ def create_belief_based_agent(
         participation_ratio_threshold=config.participation_ratio_threshold,
         plackett_luce_learning_rate=config.plackett_luce_learning_rate,
         plackett_luce_gradient_steps=config.plackett_luce_gradient_steps,
+        plackett_luce_info_gain=config.plackett_luce_info_gain,
         linear_gaussian_noise_variance=config.linear_gaussian_noise_variance,
         verbose=verbose,
         seed=config.seed
@@ -511,6 +513,7 @@ def run_variable_property_experiment(
             participation_ratio_threshold=config.participation_ratio_threshold,
             plackett_luce_learning_rate=config.plackett_luce_learning_rate,
             plackett_luce_gradient_steps=config.plackett_luce_gradient_steps,
+            plackett_luce_info_gain=config.plackett_luce_info_gain,
             linear_gaussian_noise_variance=config.linear_gaussian_noise_variance,
             seed=seed
         )
