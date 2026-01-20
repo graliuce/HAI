@@ -128,7 +128,8 @@ class GaussianBeliefState:
         chosen_distance: float,
         alternative_distances: List[float],
         learning_rate: float = 0.1,
-        num_gradient_steps: int = 5
+        num_gradient_steps: int = 5,
+        pl_info_gain: float = 0.5
     ):
         """
         Update beliefs using Plackett-Luce model for the human's choice.
@@ -150,6 +151,7 @@ class GaussianBeliefState:
             alternative_distances: Distances from human to all objects
             learning_rate: Step size for gradient updates
             num_gradient_steps: Number of gradient ascent steps
+            pl_info_gain: Controls covariance reduction rate per observation (default: 0.5)
         """
         # Build feature vectors for all objects
         chosen_features = self.get_object_feature_vector(chosen_object)
@@ -217,7 +219,7 @@ class GaussianBeliefState:
         # Reasonable values: 0.3 to 0.8 for gradual learning
 
         # Update: Σ_new = Σ - info_gain * Σ @ normalized_Fisher @ Σ
-        update = self.pl_info_gain * self.covariance @ normalized_fisher @ self.covariance
+        update = pl_info_gain * self.covariance @ normalized_fisher @ self.covariance
         self.covariance = self.covariance - update
 
         # Ensure covariance stays positive definite
@@ -676,7 +678,8 @@ class BeliefBasedRobotAgent:
             chosen_distance=chosen_distance,
             alternative_distances=all_distances,
             learning_rate=self.pl_learning_rate,
-            num_gradient_steps=self.pl_gradient_steps
+            num_gradient_steps=self.pl_gradient_steps,
+            pl_info_gain=self.pl_info_gain
         )
 
         if self.verbose:
