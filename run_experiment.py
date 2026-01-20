@@ -150,7 +150,12 @@ def parse_args():
     )
     parser.add_argument(
         "--participation-ratio-threshold", type=float, default=3.0,
-        help="Trigger query when participation ratio exceeds this (default: 3.0)"
+        help="[DEPRECATED] Use --action-confidence-threshold instead (default: 3.0)"
+    )
+    parser.add_argument(
+        "--action-confidence-threshold", type=float, default=0.6,
+        help="Query when action confidence < this (0-1). Higher = query more. Uses Thompson "
+             "sampling to measure agreement on best object. (default: 0.6 = query when <60%% agree)"
     )
     parser.add_argument(
         "--plackett-luce-learning-rate", type=float, default=0.1,
@@ -456,6 +461,7 @@ def main():
         llm_model=args.llm_model,
         use_belief_based_agent=args.use_belief_based_agent,
         participation_ratio_threshold=args.participation_ratio_threshold,
+        action_confidence_threshold=args.action_confidence_threshold,
         plackett_luce_learning_rate=args.plackett_luce_learning_rate,
         plackett_luce_gradient_steps=args.plackett_luce_gradient_steps,
         plackett_luce_info_gain=args.plackett_luce_info_gain,
@@ -485,7 +491,7 @@ def main():
     print(f"  Output directory: {args.output_dir}")
     print(f"\n  === AGENT TYPE: {agent_type} ===")
     if config.use_belief_based_agent:
-        print(f"  Participation ratio threshold: {config.participation_ratio_threshold}")
+        print(f"  Action confidence threshold: {config.action_confidence_threshold}")
         print(f"  Plackett-Luce learning rate: {config.plackett_luce_learning_rate}")
         print(f"  Plackett-Luce gradient steps: {config.plackett_luce_gradient_steps}")
         print(f"  Plackett-Luce info gain: {config.plackett_luce_info_gain}")
