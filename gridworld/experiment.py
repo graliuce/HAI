@@ -59,7 +59,8 @@ class ExperimentConfig:
 
     # Belief-based agent parameters
     use_belief_based_agent: bool = False
-    participation_ratio_threshold: float = 3.0
+    participation_ratio_threshold: float = 3.0  # Deprecated, use action_confidence_threshold
+    action_confidence_threshold: float = 0.6  # Query when confidence < this (0-1, higher = query more often)
     plackett_luce_learning_rate: float = 0.1
     plackett_luce_gradient_steps: int = 5
     plackett_luce_info_gain: float = 0.5
@@ -313,6 +314,7 @@ def create_belief_based_agent(
         llm_interface=llm_interface,
         query_budget=config.query_budget,
         participation_ratio_threshold=config.participation_ratio_threshold,
+        action_confidence_threshold=config.action_confidence_threshold,
         plackett_luce_learning_rate=config.plackett_luce_learning_rate,
         plackett_luce_gradient_steps=config.plackett_luce_gradient_steps,
         plackett_luce_info_gain=config.plackett_luce_info_gain,
@@ -511,6 +513,7 @@ def run_variable_property_experiment(
             llm_model=config.llm_model,
             use_belief_based_agent=config.use_belief_based_agent,
             participation_ratio_threshold=config.participation_ratio_threshold,
+            action_confidence_threshold=config.action_confidence_threshold,
             plackett_luce_learning_rate=config.plackett_luce_learning_rate,
             plackett_luce_gradient_steps=config.plackett_luce_gradient_steps,
             plackett_luce_info_gain=config.plackett_luce_info_gain,
@@ -533,8 +536,9 @@ def run_variable_property_experiment(
         if current_config.use_belief_based_agent:
             if verbose:
                 print("\nUsing Belief-Based Agent (no training phase)")
-                print(f"  Participation ratio threshold: {current_config.participation_ratio_threshold}")
+                print(f"  Action confidence threshold: {current_config.action_confidence_threshold}")
                 print(f"  Plackett-Luce learning rate: {current_config.plackett_luce_learning_rate}")
+                print(f"  Plackett-Luce info gain: {current_config.plackett_luce_info_gain}")
                 print(f"  Linear-Gaussian noise variance: {current_config.linear_gaussian_noise_variance}")
                 if current_config.allow_queries:
                     print(f"  Query budget: {current_config.query_budget}")

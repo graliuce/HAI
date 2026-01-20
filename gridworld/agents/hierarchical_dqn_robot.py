@@ -18,6 +18,13 @@ except ImportError:
 from ..objects import PROPERTY_CATEGORIES, PROPERTY_VALUES
 
 
+if not TORCH_AVAILABLE:
+    raise ImportError(
+        "PyTorch is required for HierarchicalDQNRobotAgent. "
+        "Install it with: pip install torch"
+    )
+
+
 class ReplayBuffer:
     """Experience replay buffer for DQN training."""
 

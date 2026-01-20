@@ -121,6 +121,35 @@ class GaussianBeliefState:
         feature_vector = self.get_object_feature_vector(properties)
         return np.dot(self.mean, feature_vector)
 
+    def get_utility_variance(self, properties: Dict[str, str]) -> float:
+        """
+        Compute variance of utility estimate for an object.
+
+        For linear utility u = w^T x, the variance is Var(u) = x^T Σ x
+
+        Args:
+            properties: Object properties
+
+        Returns:
+            Variance of utility estimate
+        """
+        feature_vector = self.get_object_feature_vector(properties)
+        return feature_vector @ self.covariance @ feature_vector
+
+    def sample_weights(self, rng: np.random.RandomState = None) -> np.ndarray:
+        """
+        Sample a weight vector from the posterior distribution.
+
+        Args:
+            rng: Random state for sampling
+
+        Returns:
+            Sampled weight vector of shape (num_features,)
+        """
+        if rng is None:
+            rng = np.random.RandomState()
+        return rng.multivariate_normal(self.mean, self.covariance)
+
     def update_from_choice_plackett_luce(
         self,
         chosen_object: Dict[str, str],
@@ -129,7 +158,7 @@ class GaussianBeliefState:
         alternative_distances: List[float],
         learning_rate: float = 0.1,
         num_gradient_steps: int = 5,
-        pl_info_gain: float = 0.5
+        info_gain: float = 0.5
     ):
         """
         Update beliefs using Plackett-Luce model for the human's choice.
@@ -219,7 +248,7 @@ class GaussianBeliefState:
         # Reasonable values: 0.3 to 0.8 for gradual learning
 
         # Update: Σ_new = Σ - info_gain * Σ @ normalized_Fisher @ Σ
-        update = pl_info_gain * self.covariance @ normalized_fisher @ self.covariance
+        update = info_gain * self.covariance @ normalized_fisher @ self.covariance
         self.covariance = self.covariance - update
 
         # Ensure covariance stays positive definite
@@ -317,6 +346,7 @@ class BeliefBasedRobotAgent:
         llm_interface: Optional[LLMInterface] = None,
         query_budget: int = 5,
         participation_ratio_threshold: float = 3.0,
+        action_confidence_threshold: float = 0.6,
         plackett_luce_learning_rate: float = 0.1,
         plackett_luce_gradient_steps: int = 5,
         plackett_luce_info_gain: float = 0.5,
@@ -332,7 +362,13 @@ class BeliefBasedRobotAgent:
             num_property_values: Number of values per property category
             llm_interface: Interface to LLM for queries
             query_budget: Maximum queries per episode
-            participation_ratio_threshold: Trigger query when PR > this value
+            participation_ratio_threshold: (DEPRECATED) Old trigger using participation ratio
+            action_confidence_threshold: Trigger query when action confidence < this value.
+                Action confidence measures how consistently posterior samples agree on the
+                best object to target. Range [0, 1]:
+                - 1.0: All samples agree on best object (high confidence, no query needed)
+                - 0.5: Half the samples disagree (low confidence, should query)
+                - Recommended: 0.6-0.8 (query when less than 60-80% agreement)
             plackett_luce_learning_rate: Learning rate for Plackett-Luce mean updates
             plackett_luce_gradient_steps: Number of gradient steps per observation
             plackett_luce_info_gain: Controls covariance reduction rate per observation.
@@ -352,6 +388,7 @@ class BeliefBasedRobotAgent:
         self.llm = llm_interface
         self.query_budget = query_budget
         self.pr_threshold = participation_ratio_threshold
+        self.action_confidence_threshold = action_confidence_threshold
         self.pl_learning_rate = plackett_luce_learning_rate
         self.pl_gradient_steps = plackett_luce_gradient_steps
         self.pl_info_gain = plackett_luce_info_gain
@@ -491,6 +528,79 @@ class BeliefBasedRobotAgent:
 
         return results
 
+    def _compute_action_confidence(
+        self,
+        observation: dict,
+        num_samples: int = 50
+    ) -> Tuple[float, int, Dict]:
+        """
+        Compute action confidence using Thompson sampling.
+
+        Samples weight vectors from the posterior, finds the best object for each
+        sample, and measures how often samples agree on the best choice.
+
+        Args:
+            observation: Current observation with objects
+            num_samples: Number of posterior samples
+
+        Returns:
+            Tuple of:
+            - confidence: Agreement rate in [0, 1] (1 = all samples agree)
+            - best_obj_id: Most commonly chosen object
+            - details: Dict with sampling details
+        """
+        objects = observation.get('objects', {})
+        robot_pos = observation['robot_position']
+
+        if not objects:
+            return 1.0, None, {}
+
+        # Precompute feature vectors and distances
+        obj_ids = list(objects.keys())
+        feature_vectors = []
+        distances = []
+        for obj_id in obj_ids:
+            obj_data = objects[obj_id]
+            feature_vectors.append(
+                self.belief.get_object_feature_vector(obj_data['properties'])
+            )
+            pos = obj_data['position']
+            dist = max(1.0, np.sqrt(
+                (pos[0] - robot_pos[0])**2 + (pos[1] - robot_pos[1])**2
+            ))
+            distances.append(dist)
+
+        feature_matrix = np.array(feature_vectors)  # (num_objects, num_features)
+        distances = np.array(distances)  # (num_objects,)
+
+        # Sample from posterior and count votes
+        vote_counts = defaultdict(int)
+
+        for _ in range(num_samples):
+            # Sample weights from posterior
+            sampled_weights = self.belief.sample_weights(self.rng)
+
+            # Compute utility/distance for all objects with sampled weights
+            utilities = feature_matrix @ sampled_weights  # (num_objects,)
+            ratios = utilities / distances
+
+            # Find best object
+            best_idx = np.argmax(ratios)
+            best_obj_id = obj_ids[best_idx]
+            vote_counts[best_obj_id] += 1
+
+        # Find most voted object and compute confidence
+        most_voted_obj = max(vote_counts.keys(), key=lambda x: vote_counts[x])
+        confidence = vote_counts[most_voted_obj] / num_samples
+
+        details = {
+            'vote_counts': dict(vote_counts),
+            'num_samples': num_samples,
+            'num_objects': len(obj_ids)
+        }
+
+        return confidence, most_voted_obj, details
+
     def _select_target(self, observation: dict) -> Optional[int]:
         """
         Select the target object with highest utility/distance ratio.
@@ -528,11 +638,15 @@ class BeliefBasedRobotAgent:
 
     def _should_query(self, observation: dict) -> bool:
         """
-        Decide whether to trigger a query based on participation ratio.
+        Decide whether to trigger a query based on action confidence.
+
+        Action confidence uses Thompson sampling: sample weight vectors from the
+        posterior, find the best object for each sample, and measure agreement.
+        Low agreement means uncertainty about which object to target → query.
 
         Query if:
         1. We have query budget remaining
-        2. Participation ratio exceeds threshold
+        2. Action confidence < threshold (uncertain about best action)
 
         Returns:
             True if should query
@@ -543,19 +657,29 @@ class BeliefBasedRobotAgent:
         if self.queries_used >= self.query_budget:
             return False
 
+        # Compute action confidence using Thompson sampling
+        confidence, best_obj, details = self._compute_action_confidence(observation)
+        should_query = confidence < self.action_confidence_threshold
+
+        # Also compute PR for logging (but don't use for decision)
         pr = self.belief.compute_participation_ratio()
-        should_query = pr > self.pr_threshold
 
         # Store for analysis
         self.entropy_history.append({
             'participation_ratio': pr,
-            'threshold': self.pr_threshold,
+            'action_confidence': confidence,
+            'threshold': self.action_confidence_threshold,
             'should_query': should_query,
-            'queries_used': self.queries_used
+            'queries_used': self.queries_used,
+            'vote_details': details
         })
 
         if self.verbose:
-            print(f"[Query Decision] PR={pr:.3f}, threshold={self.pr_threshold}, query={should_query}")
+            print(f"[Query Decision] Action Confidence={confidence:.3f} "
+                  f"(threshold={self.action_confidence_threshold}), "
+                  f"PR={pr:.3f}, query={should_query}")
+            if details.get('vote_counts'):
+                print(f"  Vote distribution: {details['vote_counts']}")
 
         return should_query
 
@@ -679,7 +803,7 @@ class BeliefBasedRobotAgent:
             alternative_distances=all_distances,
             learning_rate=self.pl_learning_rate,
             num_gradient_steps=self.pl_gradient_steps,
-            pl_info_gain=self.pl_info_gain
+            info_gain=self.pl_info_gain
         )
 
         if self.verbose:
@@ -840,12 +964,16 @@ class BeliefBasedRobotAgent:
         if self.true_reward_properties:
             print(f"True Rewarding Properties: {sorted(self.true_reward_properties)}")
 
+        # Compute action confidence for display
+        confidence, best_obj, details = self._compute_action_confidence(observation)
+
         # Print belief state summary
         print(f"\nBelief State:")
         print(f"  Active Categories: {self.active_categories}")
         print(f"  Number of Features: {len(self.feature_names)}")
-        print(f"  Participation Ratio: {self.belief.compute_participation_ratio():.3f} (max={len(self.feature_names)})")
-        print(f"  Query Threshold: {self.pr_threshold}")
+        print(f"  Action Confidence: {confidence:.3f} (threshold={self.action_confidence_threshold})")
+        if details.get('vote_counts'):
+            print(f"    Vote distribution: {details['vote_counts']}")
         print(f"  Queries Used: {self.queries_used}/{self.query_budget}")
 
         # Print expected weights
