@@ -153,13 +153,13 @@ def parse_args():
         help="[DEPRECATED] Use --action-confidence-threshold instead (default: 3.0)"
     )
     parser.add_argument(
-        "--action-confidence-threshold", type=float, default=0.6,
+        "--action-confidence-threshold", type=float, default=0.3,
         help="Query when action confidence < this (0-1). Higher = query more. Uses Thompson "
-             "sampling to measure agreement on best object. (default: 0.6 = query when <60%% agree)"
+             "sampling to measure agreement on best object. (default: 0.3 = query when <30%% agree)"
     )
     parser.add_argument(
-        "--plackett-luce-learning-rate", type=float, default=0.1,
-        help="Learning rate for Plackett-Luce belief updates (default: 0.1)"
+        "--plackett-luce-learning-rate", type=float, default=0.2,
+        help="Learning rate for Plackett-Luce belief updates (default: 0.2)"
     )
     parser.add_argument(
         "--plackett-luce-gradient-steps", type=int, default=5,
@@ -167,10 +167,10 @@ def parse_args():
     )
     parser.add_argument(
         "--plackett-luce-info-gain", type=float, default=0.5,
-        help="Covariance reduction rate per observation (0.3=gradual, 0.5=moderate, 0.8=aggressive) (default: 0.5)"
+        help="Covariance reduction rate (default: 0.5)"
     )
     parser.add_argument(
-        "--linear-gaussian-noise-variance", type=float, default=1.0,
+        "--linear-gaussian-noise-variance", type=float, default=0.5,
         help="Noise variance for linear-Gaussian updates from queries (default: 1.0)"
     )
 

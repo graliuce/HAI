@@ -1,62 +1,61 @@
 {
   "config": {
     "grid_size": 10,
-    "num_objects": 30,
-    "reward_ratio": 0.4,
+    "num_objects": 20,
+    "reward_ratio": 0.5,
     "num_rewarding_properties": 2,
     "num_property_values": 5,
     "additive_valuation": true,
-    "num_train_episodes": 100000,
-    "num_eval_episodes": 100,
-    "learning_rate": 0.00025,
-    "hidden_dims": [
-      128,
-      128
-    ],
+    "num_train_episodes": 1000,
+    "num_eval_episodes": 30,
     "allow_queries": true,
     "query_budget": 5,
-    "query_threshold": 2.0,
-    "blend_factor": 0.5,
     "llm_model": "gpt-5-chat-latest",
     "num_seeds": 1,
-    "base_seed": 43
+    "base_seed": 42,
+    "use_belief_based_agent": true,
+    "participation_ratio_threshold": 3.0,
+    "plackett_luce_learning_rate": 0.1,
+    "plackett_luce_gradient_steps": 5,
+    "plackett_luce_info_gain": 0.5,
+    "linear_gaussian_noise_variance": 1.0
   },
   "summary": {
     "1": {
-      "eval_mean": 2.367842665331281,
+      "eval_mean": 1.9078113201090794,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 0.83
+      "avg_queries": 0.36666666666666664
     },
     "2": {
-      "eval_mean": 2.685476675238115,
+      "eval_mean": 2.356950829043214,
       "eval_std": 0.0,
       "eval_sem": 0.0,
       "avg_queries": 1.0
     },
     "3": {
-      "eval_mean": 1.752215798721359,
+      "eval_mean": 2.0481589135637686,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 1.69
+      "avg_queries": 1.7
     },
     "4": {
-      "eval_mean": 1.575832090630894,
+      "eval_mean": 1.7719629270718298,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 1.67
+      "avg_queries": 1.7666666666666666
     },
     "5": {
-      "eval_mean": 0.9641723316074738,
+      "eval_mean": 0.546751840350856,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 1.99
+      "avg_queries": 1.6333333333333333
     },
     "training": {
       "train_mean": 0.0,
       "train_std": 0.0
     }
   },
-  "correlation": -0.9146999455212187,
-  "timestamp": "2026-01-10T17:44:57.004746"
+  "correlation": -0.7532356664799906,
+  "timestamp": "2026-01-20T15:46:36.545865"
 }

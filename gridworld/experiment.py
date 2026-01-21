@@ -17,6 +17,35 @@ from tqdm import tqdm
 RobotAgent = Union[HierarchicalDQNRobotAgent, QueryAugmentedRobotAgent, BeliefBasedRobotAgent]
 
 
+def _print_episode_header(episode_num, human_obs, env):
+    """Print a clear header at the start of each episode."""
+    print("\n")
+    print("=" * 100)
+    print(f"EPISODE {episode_num if episode_num is not None else '?'} START")
+    print("=" * 100)
+    
+    # Print human's true rewards
+    print(f"\nHuman's True Rewarding Properties: {sorted(human_obs['reward_properties'])}")
+    
+    # If additive valuation, print the property value rewards
+    if human_obs.get('additive_valuation', False) and human_obs.get('property_value_rewards'):
+        print("\nProperty Value Rewards (Additive Mode):")
+        prop_val_rewards = human_obs['property_value_rewards']
+        # Sort by absolute reward value
+        sorted_props = sorted(prop_val_rewards.items(), key=lambda x: abs(x[1]), reverse=True)
+        for prop_val, reward in sorted_props:
+            print(f"  {prop_val}: {reward:+.3f}")
+    
+    # Print environment info
+    print(f"\nEnvironment Configuration:")
+    print(f"  Grid Size: {env.grid_size}x{env.grid_size}")
+    print(f"  Number of Objects: {len(env.objects)}")
+    print(f"  Active Categories: {env.active_categories}")
+    print(f"  Number of Distinct Properties: {env.num_distinct_properties}")
+    
+    print("=" * 100 + "\n")
+
+
 @dataclass
 class ExperimentConfig:
     """Configuration for the experiment."""
@@ -105,7 +134,8 @@ def run_episode(
     env: GridWorld,
     human: HumanAgent,
     robot: RobotAgent,
-    training: bool = True
+    training: bool = True,
+    episode_num: Optional[int] = None
 ) -> EpisodeResult:
     """
     Run a single episode.
@@ -115,6 +145,7 @@ def run_episode(
         human: The human agent
         robot: The robot agent (DQN, Hierarchical, or QueryAugmented)
         training: Whether to update robot's Q-values
+        episode_num: Episode number for verbose output
 
     Returns:
         Episode result with statistics
@@ -130,6 +161,10 @@ def run_episode(
         object_rewards=human_obs.get('object_rewards')
     )
     result.reward_properties = human_obs['reward_properties']
+
+    # Print episode start header if verbose and not training
+    if not training and isinstance(robot, BeliefBasedRobotAgent) and robot.verbose:
+        _print_episode_header(episode_num, human_obs, env)
 
     # Reset robot - for belief-based agent, pass active categories so it
     # initializes the correct dimensionality belief state
@@ -433,7 +468,7 @@ def run_evaluation_per_property_count(
         )
 
         human = HumanAgent()
-        result = run_episode(env, human, robot, training=False)
+        result = run_episode(env, human, robot, training=False, episode_num=ep + 1)
         results.append(result)
 
     # Restore epsilon

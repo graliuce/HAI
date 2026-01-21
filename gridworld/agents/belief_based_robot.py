@@ -683,15 +683,15 @@ class BeliefBasedRobotAgent:
 
         return should_query
 
-    def _execute_query(self, observation: dict) -> Dict[str, float]:
+    def _execute_query(self, observation: dict) -> Tuple[Dict[str, float], str, str]:
         """
         Execute a query to the human and return extracted weights.
 
         Returns:
-            Dict mapping feature names to weights
+            Tuple of (weights dict, query string, response string)
         """
         if self.llm is None or self.human_responder is None:
-            return {}
+            return {}, "", ""
 
         # Gather board properties
         objects = observation.get('objects', {})
@@ -750,16 +750,7 @@ class BeliefBasedRobotAgent:
         })
         self.queries_used += 1
 
-        if self.verbose:
-            print(f"\n[Query {self.queries_used}]")
-            print(f"  Query: {query}")
-            print(f"  Response: {response}")
-            print(f"  Extracted weights (L2 normalized):")
-            sorted_weights = sorted(property_weights.items(), key=lambda x: abs(x[1]), reverse=True)
-            for prop, weight in sorted_weights[:5]:
-                print(f"    {prop}: {weight:+.4f}")
-
-        return property_weights
+        return property_weights, query, response
 
     def _update_belief_from_observation(
         self,
@@ -775,6 +766,11 @@ class BeliefBasedRobotAgent:
         """
         objects = observation.get('objects', {})
         human_pos = observation['human_position']
+
+        # Store previous belief state for comparison
+        if self.verbose:
+            prev_mean = self.belief.mean.copy()
+            prev_variances = np.array([self.belief.covariance[i, i] for i in range(self.belief.num_features)])
 
         # Get all alternative objects (including the chosen one conceptually)
         # But since the chosen object may have been removed, we reconstruct
@@ -807,17 +803,13 @@ class BeliefBasedRobotAgent:
         )
 
         if self.verbose:
-            pr_after = self.belief.compute_participation_ratio()
-            print(f"\n[Belief Update - Plackett-Luce]")
-            print(f"  Human collected object with properties: {chosen_object['properties']}")
-            print(f"  Distance to chosen: {chosen_distance:.2f}")
-            print(f"  Number of alternatives: {len(all_objects_props) - 1}")
-            print(f"  Participation Ratio after update: {pr_after:.3f}")
-            print(f"  Updated mean weights (top 5):")
-            weights = self.belief.get_expected_weights()
-            sorted_weights = sorted(weights.items(), key=lambda x: x[1], reverse=True)
-            for prop, weight in sorted_weights[:5]:
-                print(f"    {prop}: {weight:+.4f}")
+            self._print_belief_update_table(
+                prev_mean, 
+                prev_variances, 
+                chosen_object, 
+                chosen_distance,
+                len(all_objects_props) - 1
+            )
 
     def _process_observations(self, observation: dict):
         """Process new human collections and update beliefs."""
@@ -954,53 +946,177 @@ class BeliefBasedRobotAgent:
 
         return False
 
+    def _print_belief_update_table(
+        self, 
+        prev_mean: np.ndarray,
+        prev_variances: np.ndarray,
+        chosen_object: dict,
+        chosen_distance: float,
+        num_alternatives: int
+    ):
+        """Print a detailed table of belief updates from human observation."""
+        print("\n" + "=" * 120)
+        print("BELIEF UPDATE: Human Collected Object")
+        print("=" * 120)
+        
+        print(f"\nObject Properties: {chosen_object['properties']}")
+        print(f"Distance to Object: {chosen_distance:.2f}")
+        print(f"Number of Alternative Objects: {num_alternatives}")
+        
+        # Get current mean and variances
+        curr_mean = self.belief.mean
+        curr_variances = np.array([self.belief.covariance[i, i] for i in range(self.belief.num_features)])
+        
+        # Calculate deltas
+        mean_deltas = curr_mean - prev_mean
+        variance_deltas = curr_variances - prev_variances
+        
+        print(f"\nBelief Updates (All Features):")
+        print("-" * 120)
+        print(f"{'Feature':<15} {'Prev Mean':>12} {'New Mean':>12} {'Δ Mean':>12} {'Prev Var':>12} {'New Var':>12} {'Δ Var':>12}")
+        print("-" * 120)
+        
+        # Create list of (feature, abs_mean_delta) for sorting
+        feature_deltas = []
+        for i, feature in enumerate(self.feature_names):
+            feature_deltas.append((i, feature, abs(mean_deltas[i])))
+        
+        # Sort by absolute mean delta (largest changes first), then show all
+        feature_deltas.sort(key=lambda x: x[2], reverse=True)
+        
+        for i, feature, _ in feature_deltas:
+            marker = " *" if self.true_reward_properties and feature in self.true_reward_properties else ""
+            print(f"{feature:<15} {prev_mean[i]:>+12.4f} {curr_mean[i]:>+12.4f} {mean_deltas[i]:>+12.4f} "
+                  f"{prev_variances[i]:>12.4f} {curr_variances[i]:>12.4f} {variance_deltas[i]:>+12.4f}{marker}")
+        
+        print("-" * 120)
+        print("* indicates true rewarding property")
+        print("=" * 120 + "\n")
+
+    def _print_query_update_table(
+        self,
+        prev_mean: np.ndarray,
+        prev_variances: np.ndarray,
+        query: str,
+        response: str,
+        weights: Dict[str, float]
+    ):
+        """Print a detailed table of belief updates from query response."""
+        print("\n" + "=" * 120)
+        print("BELIEF UPDATE: Query Response")
+        print("=" * 120)
+        
+        print(f"\nQuery: {query}")
+        print(f"Response: {response}")
+        
+        # Print LLM-extracted weights for all features
+        print(f"\nLLM-Extracted Weights (L2 Normalized):")
+        print("-" * 80)
+        print(f"{'Feature':<15} {'LLM Weight':>15} {'True Reward?':<15}")
+        print("-" * 80)
+        
+        # Sort by absolute weight value (largest first)
+        sorted_weights = sorted(weights.items(), key=lambda x: abs(x[1]), reverse=True)
+        for feature, weight in sorted_weights:
+            is_true = "YES *" if self.true_reward_properties and feature in self.true_reward_properties else ""
+            print(f"{feature:<15} {weight:>+15.6f} {is_true:<15}")
+        
+        # Show features not mentioned by LLM (weight = 0)
+        mentioned_features = set(weights.keys())
+        unmentioned = [f for f in self.feature_names if f not in mentioned_features]
+        if unmentioned:
+            print(f"\n  Features not mentioned (weight = 0): {', '.join(unmentioned)}")
+        
+        print("-" * 80)
+        
+        # Get current mean and variances
+        curr_mean = self.belief.mean
+        curr_variances = np.array([self.belief.covariance[i, i] for i in range(self.belief.num_features)])
+        
+        # Calculate deltas
+        mean_deltas = curr_mean - prev_mean
+        variance_deltas = curr_variances - prev_variances
+        
+        print(f"\nBelief Updates After Incorporating Query (All Features):")
+        print("-" * 120)
+        print(f"{'Feature':<15} {'Prev Mean':>12} {'New Mean':>12} {'Δ Mean':>12} {'Prev Var':>12} {'New Var':>12} {'Δ Var':>12}")
+        print("-" * 120)
+        
+        # Create list of (feature, abs_mean_delta) for sorting
+        feature_deltas = []
+        for i, feature in enumerate(self.feature_names):
+            feature_deltas.append((i, feature, abs(mean_deltas[i])))
+        
+        # Sort by absolute mean delta (largest changes first), then show all
+        feature_deltas.sort(key=lambda x: x[2], reverse=True)
+        
+        for i, feature, _ in feature_deltas:
+            marker = " *" if self.true_reward_properties and feature in self.true_reward_properties else ""
+            print(f"{feature:<15} {prev_mean[i]:>+12.4f} {curr_mean[i]:>+12.4f} {mean_deltas[i]:>+12.4f} "
+                  f"{prev_variances[i]:>12.4f} {curr_variances[i]:>12.4f} {variance_deltas[i]:>+12.4f}{marker}")
+        
+        print("-" * 120)
+        print("* indicates true rewarding property")
+        print("=" * 120 + "\n")
+
     def _print_decision_summary(self, observation: dict, query_triggered: bool):
         """Print summary of high-level decision."""
-        print("\n" + "="*80)
-        print("HIGH-LEVEL DECISION (Belief-Based)")
-        print("="*80)
-
-        # Print true reward properties if available
-        if self.true_reward_properties:
-            print(f"True Rewarding Properties: {sorted(self.true_reward_properties)}")
+        print("\n" + "="*120)
+        print("HIGH-LEVEL DECISION POINT (Robot Choosing Object)")
+        print("="*120)
 
         # Compute action confidence for display
         confidence, best_obj, details = self._compute_action_confidence(observation)
 
         # Print belief state summary
-        print(f"\nBelief State:")
+        print(f"\nCurrent Belief State:")
         print(f"  Active Categories: {self.active_categories}")
         print(f"  Number of Features: {len(self.feature_names)}")
         print(f"  Action Confidence: {confidence:.3f} (threshold={self.action_confidence_threshold})")
         if details.get('vote_counts'):
-            print(f"    Vote distribution: {details['vote_counts']}")
+            print(f"    Vote distribution across objects: {details['vote_counts']}")
         print(f"  Queries Used: {self.queries_used}/{self.query_budget}")
 
-        # Print expected weights
+        # Print expected weights in a table
         weights = self.belief.get_expected_weights()
-        sorted_weights = sorted(weights.items(), key=lambda x: x[1], reverse=True)
-        print(f"\n  Expected Weights (top 5):")
-        for prop, weight in sorted_weights[:5]:
+        sorted_weights = sorted(weights.items(), key=lambda x: abs(x[1]), reverse=True)
+        print(f"\n  Expected Feature Weights:")
+        print(f"  {'-'*60}")
+        print(f"  {'Feature':<15} {'Weight':>12} {'Variance':>12}")
+        print(f"  {'-'*60}")
+        for prop, weight in sorted_weights:
+            variance = self.belief.get_feature_variance(prop)
             marker = " *" if self.true_reward_properties and prop in self.true_reward_properties else ""
-            print(f"    {prop}: {weight:+.4f}{marker}")
+            print(f"  {prop:<15} {weight:>+12.4f} {variance:>12.4f}{marker}")
+        print(f"  {'-'*60}")
+        print(f"  * indicates true rewarding property")
 
-        # Print object utilities
+        # Print object utilities in a detailed table
         utilities = self._compute_object_utilities(observation)
         if utilities:
-            print(f"\n  Object Utilities (top 5 by ratio):")
-            sorted_objs = sorted(utilities.items(), key=lambda x: x[1][2], reverse=True)[:5]
+            objects = observation.get('objects', {})
+            print(f"\n  All Object Utilities and Decision:")
+            print(f"  {'-'*120}")
+            print(f"  {'Obj ID':<8} {'Properties':<40} {'Utility':>12} {'Distance':>10} {'Ratio':>12} {'Selected':<10}")
+            print(f"  {'-'*120}")
+            sorted_objs = sorted(utilities.items(), key=lambda x: x[1][2], reverse=True)
             for obj_id, (u, d, r) in sorted_objs:
-                marker = " <-- TARGET" if obj_id == self.current_target_object_id else ""
-                print(f"    Object {obj_id}: utility={u:+.3f}, dist={d:.1f}, ratio={r:+.3f}{marker}")
+                props_str = ', '.join([f"{k}:{v}" for k, v in objects[obj_id]['properties'].items()])
+                selected = ">>> YES" if obj_id == self.current_target_object_id else ""
+                print(f"  {obj_id:<8} {props_str:<40} {u:>+12.4f} {d:>10.2f} {r:>+12.4f} {selected:<10}")
+            print(f"  {'-'*120}")
+            
+            # Highlight the chosen object
+            if self.current_target_object_id is not None and self.current_target_object_id in utilities:
+                chosen_u, chosen_d, chosen_r = utilities[self.current_target_object_id]
+                chosen_props = objects[self.current_target_object_id]['properties']
+                print(f"\n  CHOSEN OBJECT: {self.current_target_object_id}")
+                print(f"    Properties: {chosen_props}")
+                print(f"    Estimated Utility: {chosen_u:+.4f}")
+                print(f"    Distance: {chosen_d:.2f}")
+                print(f"    Estimated Utility/Distance: {chosen_r:+.4f}")
 
-        if query_triggered:
-            print("\n  *** QUERY TRIGGERED ***")
-            if self.query_history:
-                last_query = self.query_history[-1]
-                print(f"  Query: {last_query['query']}")
-                print(f"  Response: {last_query['response']}")
-
-        print("="*80 + "\n")
+        print("="*120 + "\n")
 
     def get_action(self, observation: dict, training: bool = False) -> int:
         """
@@ -1034,11 +1150,21 @@ class BeliefBasedRobotAgent:
             # Query decision
             if not training and self._should_query(observation):
                 query_triggered = True
-                weights = self._execute_query(observation)
+                
+                # Store previous belief state for comparison
+                if self.verbose:
+                    prev_mean = self.belief.mean.copy()
+                    prev_variances = np.array([self.belief.covariance[i, i] for i in range(self.belief.num_features)])
+                
+                weights, query, response = self._execute_query(observation)
                 self.belief.update_from_linear_gaussian(
                     weights,
                     observation_noise_variance=self.lg_noise_variance
                 )
+                
+                # Print query update table
+                if self.verbose:
+                    self._print_query_update_table(prev_mean, prev_variances, query, response, weights)
 
             # Select new target
             target_obj_id = self._select_target(observation)

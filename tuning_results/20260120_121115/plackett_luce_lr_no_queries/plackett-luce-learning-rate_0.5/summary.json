@@ -1,0 +1,61 @@
+{
+  "config": {
+    "grid_size": 10,
+    "num_objects": 20,
+    "reward_ratio": 0.5,
+    "num_rewarding_properties": 2,
+    "num_property_values": 5,
+    "additive_valuation": true,
+    "num_train_episodes": 0,
+    "num_eval_episodes": 100,
+    "allow_queries": false,
+    "query_budget": 5,
+    "llm_model": "gpt-5-chat-latest",
+    "num_seeds": 1,
+    "base_seed": 42,
+    "use_belief_based_agent": true,
+    "participation_ratio_threshold": 3.0,
+    "plackett_luce_learning_rate": 0.5,
+    "plackett_luce_gradient_steps": 5,
+    "plackett_luce_info_gain": 0.5,
+    "linear_gaussian_noise_variance": 1.0
+  },
+  "summary": {
+    "1": {
+      "eval_mean": 2.135573017542118,
+      "eval_std": 0.0,
+      "eval_sem": 0.0,
+      "avg_queries": 0.0
+    },
+    "2": {
+      "eval_mean": 1.918970065243459,
+      "eval_std": 0.0,
+      "eval_sem": 0.0,
+      "avg_queries": 0.0
+    },
+    "3": {
+      "eval_mean": 1.707704471861088,
+      "eval_std": 0.0,
+      "eval_sem": 0.0,
+      "avg_queries": 0.0
+    },
+    "4": {
+      "eval_mean": 1.7031626951359191,
+      "eval_std": 0.0,
+      "eval_sem": 0.0,
+      "avg_queries": 0.0
+    },
+    "5": {
+      "eval_mean": 0.4328585289581296,
+      "eval_std": 0.0,
+      "eval_sem": 0.0,
+      "avg_queries": 0.0
+    },
+    "training": {
+      "train_mean": NaN,
+      "train_std": NaN
+    }
+  },
+  "correlation": -0.8605001685092895,
+  "timestamp": "2026-01-20T12:13:01.047071"
+}
