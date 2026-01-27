@@ -92,7 +92,6 @@ class ExperimentConfig:
     action_confidence_threshold: float = 0.6  # Query when confidence < this (0-1, higher = query more often)
     plackett_luce_learning_rate: float = 0.1
     plackett_luce_gradient_steps: int = 5
-    plackett_luce_info_gain: float = 0.5
     linear_gaussian_noise_variance: float = 1.0
 
     # Random seed
@@ -352,7 +351,6 @@ def create_belief_based_agent(
         action_confidence_threshold=config.action_confidence_threshold,
         plackett_luce_learning_rate=config.plackett_luce_learning_rate,
         plackett_luce_gradient_steps=config.plackett_luce_gradient_steps,
-        plackett_luce_info_gain=config.plackett_luce_info_gain,
         linear_gaussian_noise_variance=config.linear_gaussian_noise_variance,
         verbose=verbose,
         seed=config.seed
@@ -551,7 +549,6 @@ def run_variable_property_experiment(
             action_confidence_threshold=config.action_confidence_threshold,
             plackett_luce_learning_rate=config.plackett_luce_learning_rate,
             plackett_luce_gradient_steps=config.plackett_luce_gradient_steps,
-            plackett_luce_info_gain=config.plackett_luce_info_gain,
             linear_gaussian_noise_variance=config.linear_gaussian_noise_variance,
             seed=seed
         )
@@ -573,7 +570,6 @@ def run_variable_property_experiment(
                 print("\nUsing Belief-Based Agent (no training phase)")
                 print(f"  Action confidence threshold: {current_config.action_confidence_threshold}")
                 print(f"  Plackett-Luce learning rate: {current_config.plackett_luce_learning_rate}")
-                print(f"  Plackett-Luce info gain: {current_config.plackett_luce_info_gain}")
                 print(f"  Linear-Gaussian noise variance: {current_config.linear_gaussian_noise_variance}")
                 if current_config.allow_queries:
                     print(f"  Query budget: {current_config.query_budget}")

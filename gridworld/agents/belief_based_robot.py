@@ -157,21 +157,16 @@ class GaussianBeliefState:
         chosen_distance: float,
         alternative_distances: List[float],
         learning_rate: float = 0.1,
-        num_gradient_steps: int = 5,
-        info_gain: float = 0.5
+        num_gradient_steps: int = 50,
+        convergence_tol: float = 1e-6
     ):
         """
-        Update beliefs using Plackett-Luce model for the human's choice.
+        Update beliefs using Plackett-Luce model with Laplace approximation.
 
-        The human chooses the object with highest utility/distance ratio.
-        We model this as a softmax choice model:
-
-        P(choose i) = exp(utility_i / distance_i) / sum_j exp(utility_j / distance_j)
-
-        where utility = w^T * features
-
-        We use gradient ascent on the log-likelihood to update the mean,
-        and a simple approximation for the covariance update.
+        Following the posterior update method:
+        1. Find MAP estimate by maximizing log p(θ|D) via gradient ascent
+        2. Compute Hessian H = Σ^{-1} + Fisher at the MAP estimate
+        3. Set new covariance as H^{-1}
 
         Args:
             chosen_object: Properties of the object the human chose
@@ -179,8 +174,8 @@ class GaussianBeliefState:
             chosen_distance: Distance from human to chosen object
             alternative_distances: Distances from human to all objects
             learning_rate: Step size for gradient updates
-            num_gradient_steps: Number of gradient ascent steps
-            pl_info_gain: Controls covariance reduction rate per observation (default: 0.5)
+            num_gradient_steps: Maximum number of gradient ascent steps
+            convergence_tol: Stop when gradient norm falls below this
         """
         # Build feature vectors for all objects
         chosen_features = self.get_object_feature_vector(chosen_object)
@@ -188,75 +183,85 @@ class GaussianBeliefState:
 
         # Use max(dist, 1.0) to avoid division by zero
         chosen_dist = max(chosen_distance, 1.0)
-        all_distances = [max(d, 1.0) for d in alternative_distances]
+        all_distances = np.array([max(d, 1.0) for d in alternative_distances])
 
-        # Gradient ascent on log-likelihood
-        for _ in range(num_gradient_steps):
-            # Compute utility/distance for all objects
-            utilities = np.array([np.dot(self.mean, f) for f in all_features])
-            weighted_utilities = utilities / np.array(all_distances)
+        # Precompute weighted features (φ / c)
+        weighted_features = [f / d for f, d in zip(all_features, all_distances)]
+        chosen_weighted = chosen_features / chosen_dist
 
-            # Softmax probabilities
+        # Prior precision and mean
+        prior_precision = np.linalg.inv(self.covariance)
+        prior_mean = self.mean.copy()
+
+        # === Step 1: Find MAP estimate via gradient ascent ===
+        theta = self.mean.copy()
+
+        for step in range(num_gradient_steps):
+            # Compute utilities and softmax probabilities
+            utilities = np.array([np.dot(theta, f) for f in all_features])
+            weighted_utilities = utilities / all_distances
+
+            # Softmax probabilities (numerically stable)
             max_wu = np.max(weighted_utilities)
             exp_wu = np.exp(weighted_utilities - max_wu)
             probs = exp_wu / (np.sum(exp_wu) + 1e-10)
 
-            # Gradient of log P(chosen) with respect to weights
-            # d log P / d w = (chosen_features / chosen_dist) - sum_j p_j * (features_j / dist_j)
-            expected_features = sum(
-                p * (f / d) for p, f, d in zip(probs, all_features, all_distances)
-            )
-            gradient = (chosen_features / chosen_dist) - expected_features
+            # Gradient of log-likelihood
+            expected_weighted = np.zeros(self.num_features)
+            for p, wf in zip(probs, weighted_features):
+                expected_weighted += p * wf
+            grad_likelihood = chosen_weighted - expected_weighted
 
-            # Update mean
-            self.mean = self.mean + learning_rate * gradient
+            # Gradient of log-prior: -Σ^{-1}(θ - μ)
+            grad_prior = -prior_precision @ (theta - prior_mean)
 
-        # Update covariance using Fisher information approximation
-        # The Fisher information for Plackett-Luce is the covariance of the score function
+            # Total gradient of log-posterior
+            gradient = grad_likelihood + grad_prior
 
-        # Compute Fisher information matrix
-        # Fisher = E[outer(weighted_features)] - outer(E[weighted_features])
-        # This is the variance of weighted features under the choice distribution
+            # Check convergence
+            if np.linalg.norm(gradient) < convergence_tol:
+                break
+
+            # Update
+            theta = theta + learning_rate * gradient
+
+        # === Step 2: Compute Hessian at MAP estimate ===
+        # Recompute probabilities at final theta
+        utilities = np.array([np.dot(theta, f) for f in all_features])
+        weighted_utilities = utilities / all_distances
+        max_wu = np.max(weighted_utilities)
+        exp_wu = np.exp(weighted_utilities - max_wu)
+        probs = exp_wu / (np.sum(exp_wu) + 1e-10)
+
+        # Fisher information of likelihood
         fisher_info = np.zeros((self.num_features, self.num_features))
-        for p, f, d in zip(probs, all_features, all_distances):
-            weighted_f = f / d
-            fisher_info += p * np.outer(weighted_f, weighted_f)
+        for p, wf in zip(probs, weighted_features):
+            fisher_info += p * np.outer(wf, wf)
 
-        expected_f = sum(p * (f / d) for p, f, d in zip(probs, all_features, all_distances))
-        fisher_info -= np.outer(expected_f, expected_f)
+        expected_weighted = np.zeros(self.num_features)
+        for p, wf in zip(probs, weighted_features):
+            expected_weighted += p * wf
+        fisher_info -= np.outer(expected_weighted, expected_weighted)
 
-        # The raw Fisher info can be very small because:
-        # 1. Features are sparse binary vectors divided by distances (often 2-10)
-        # 2. Probabilities are spread across many alternatives
-        #
-        # To make info_gain interpretable, we normalize the Fisher info
-        # so that one observation reduces variance by approximately info_gain fraction
-        # along the direction of maximum information
+        # Hessian of negative log-posterior = prior precision + Fisher
+        H = prior_precision + fisher_info
 
-        fisher_trace = np.trace(fisher_info)
-        if fisher_trace > 1e-10:
-            # Normalize so trace equals 1, then info_gain directly controls reduction rate
-            normalized_fisher = fisher_info / fisher_trace
-        else:
-            normalized_fisher = fisher_info
+        # === Step 3: New covariance is H^{-1} ===
+        try:
+            new_covariance = np.linalg.inv(H)
+        except np.linalg.LinAlgError:
+            new_covariance = np.linalg.pinv(H)
 
-        # info_gain interpretation after normalization:
-        # - info_gain = 0.3: Each observation reduces variance by ~30% along info direction
-        # - info_gain = 0.5: Each observation reduces variance by ~50% along info direction
-        # - info_gain = 0.8: Each observation reduces variance by ~80% along info direction
-        #
-        # Reasonable values: 0.3 to 0.8 for gradual learning
-
-        # Update: Σ_new = Σ - info_gain * Σ @ normalized_Fisher @ Σ
-        update = info_gain * self.covariance @ normalized_fisher @ self.covariance
-        self.covariance = self.covariance - update
-
-        # Ensure covariance stays positive definite
-        # Use a very small floor to allow eigenvalues to shrink significantly
-        eigenvalues, eigenvectors = np.linalg.eigh(self.covariance)
-        min_eigenvalue = 0.001  # Allow shrinking to 0.1% of original variance
+        # Ensure symmetry and positive definiteness
+        new_covariance = 0.5 * (new_covariance + new_covariance.T)
+        eigenvalues, eigenvectors = np.linalg.eigh(new_covariance)
+        min_eigenvalue = 1e-6
         eigenvalues = np.maximum(eigenvalues, min_eigenvalue)
-        self.covariance = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+        new_covariance = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+
+        # Update belief state
+        self.mean = theta
+        self.covariance = new_covariance
 
     def update_from_linear_gaussian(
         self,
@@ -349,7 +354,6 @@ class BeliefBasedRobotAgent:
         action_confidence_threshold: float = 0.6,
         plackett_luce_learning_rate: float = 0.1,
         plackett_luce_gradient_steps: int = 5,
-        plackett_luce_info_gain: float = 0.5,
         linear_gaussian_noise_variance: float = 1.0,
         verbose: bool = False,
         seed: Optional[int] = None
@@ -371,12 +375,6 @@ class BeliefBasedRobotAgent:
                 - Recommended: 0.6-0.8 (query when less than 60-80% agreement)
             plackett_luce_learning_rate: Learning rate for Plackett-Luce mean updates
             plackett_luce_gradient_steps: Number of gradient steps per observation
-            plackett_luce_info_gain: Controls covariance reduction rate per observation.
-                After normalization, this is approximately the fraction of variance
-                reduced along the direction of maximum information per observation.
-                - 0.3: Gradual learning (30% reduction per observation)
-                - 0.5: Moderate learning (50% reduction per observation)
-                - 0.8: Aggressive learning (80% reduction per observation)
             linear_gaussian_noise_variance: Observation noise for linear-Gaussian updates
             verbose: Print debug information
             seed: Random seed
@@ -391,7 +389,6 @@ class BeliefBasedRobotAgent:
         self.action_confidence_threshold = action_confidence_threshold
         self.pl_learning_rate = plackett_luce_learning_rate
         self.pl_gradient_steps = plackett_luce_gradient_steps
-        self.pl_info_gain = plackett_luce_info_gain
         self.lg_noise_variance = linear_gaussian_noise_variance
         self.verbose = verbose
 
@@ -601,6 +598,50 @@ class BeliefBasedRobotAgent:
 
         return confidence, most_voted_obj, details
 
+    def _compute_feature_votes_from_thompson(
+        self,
+        observation: dict,
+        thompson_details: dict
+    ) -> Dict[str, float]:
+        """
+        Compute normalized feature vote distribution from Thompson sampling results.
+        
+        For each feature, count how many votes went to objects containing that feature,
+        then normalize by total votes.
+        
+        Args:
+            observation: Current observation with objects
+            thompson_details: Details dict from _compute_action_confidence containing vote_counts
+            
+        Returns:
+            Dict mapping feature names to normalized vote frequencies
+        """
+        vote_counts = thompson_details.get('vote_counts', {})
+        if not vote_counts:
+            # Return uniform distribution if no votes
+            return {feature: 0.0 for feature in self.feature_names}
+        
+        objects = observation.get('objects', {})
+        total_votes = thompson_details.get('num_samples', sum(vote_counts.values()))
+        
+        # Count votes for each feature
+        feature_votes = defaultdict(float)
+        
+        for obj_id, votes in vote_counts.items():
+            if obj_id in objects:
+                # Get all features (property values) of this object
+                obj_properties = objects[obj_id]['properties']
+                for prop_value in obj_properties.values():
+                    if prop_value in self.belief.feature_to_idx:
+                        feature_votes[prop_value] += votes
+        
+        # Normalize by total votes
+        normalized_votes = {}
+        for feature in self.feature_names:
+            normalized_votes[feature] = feature_votes.get(feature, 0.0) / total_votes
+        
+        return normalized_votes
+
     def _select_target(self, observation: dict) -> Optional[int]:
         """
         Select the target object with highest utility/distance ratio.
@@ -707,10 +748,28 @@ class BeliefBasedRobotAgent:
             collected_properties.extend(collected['properties'].values())
         collected_properties = list(dict.fromkeys(collected_properties))
 
+        # Compute Thompson sampling vote distribution for features
+        # Run Thompson sampling to see which objects are selected
+        confidence, best_obj, details = self._compute_action_confidence(observation, num_samples=100)
+        
+        # Extract feature vote counts from Thompson sampling
+        thompson_votes = self._compute_feature_votes_from_thompson(observation, details)
+
+        # Print Thompson sampling vote distribution if verbose
+        if self.verbose:
+            print("\n[Thompson Sampling Vote Distribution]")
+            print(f"{'Feature':<15} | {'Normalized Value':<20}")
+            print("-" * 38)
+            # Sort by normalized value (descending) for better readability
+            sorted_votes = sorted(thompson_votes.items(), key=lambda x: x[1], reverse=True)
+            for feature, norm_value in sorted_votes:
+                print(f"{feature:<15} | {norm_value:<20.3f}")
+            print()
+
         # Generate query
         query = self.llm.generate_query(
             board_properties,
-            collected_properties,
+            thompson_votes,
             self.active_categories
         )
 
@@ -798,8 +857,7 @@ class BeliefBasedRobotAgent:
             chosen_distance=chosen_distance,
             alternative_distances=all_distances,
             learning_rate=self.pl_learning_rate,
-            num_gradient_steps=self.pl_gradient_steps,
-            info_gain=self.pl_info_gain
+            num_gradient_steps=self.pl_gradient_steps
         )
 
         if self.verbose:

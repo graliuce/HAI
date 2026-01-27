@@ -60,7 +60,7 @@ case $choice in
             --plackett-luce-values "0.05,0.1,0.2" \
             --linear-gaussian-values "0.5,1.0,2.0" \
             --train-episodes 0 \
-            --eval-episodes 5 \
+            --eval-episodes 10 \
             --num-seeds 1
         ;;
     
@@ -107,7 +107,7 @@ case $choice in
                 --plackett-luce-values "0.01,0.05,0.1,0.2,0.5" \
                 --linear-gaussian-values "0.1,0.5,1.0,2.0,5.0" \
                 --train-episodes 0 \
-                --eval-episodes 15 \
+                --eval-episodes 10 \
                 --num-seeds 1
         else
             echo "Cancelled."

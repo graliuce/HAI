@@ -155,7 +155,7 @@ def parse_args():
     parser.add_argument(
         "--action-confidence-threshold", type=float, default=0.3,
         help="Query when action confidence < this (0-1). Higher = query more. Uses Thompson "
-             "sampling to measure agreement on best object. (default: 0.3 = query when <30%% agree)"
+             "sampling to measure agreement on best object. (default: 0.3 = query when <30% agree)"
     )
     parser.add_argument(
         "--plackett-luce-learning-rate", type=float, default=0.2,
@@ -164,10 +164,6 @@ def parse_args():
     parser.add_argument(
         "--plackett-luce-gradient-steps", type=int, default=5,
         help="Number of gradient steps per Plackett-Luce update (default: 5)"
-    )
-    parser.add_argument(
-        "--plackett-luce-info-gain", type=float, default=0.5,
-        help="Covariance reduction rate (default: 0.5)"
     )
     parser.add_argument(
         "--linear-gaussian-noise-variance", type=float, default=0.5,
@@ -464,7 +460,6 @@ def main():
         action_confidence_threshold=args.action_confidence_threshold,
         plackett_luce_learning_rate=args.plackett_luce_learning_rate,
         plackett_luce_gradient_steps=args.plackett_luce_gradient_steps,
-        plackett_luce_info_gain=args.plackett_luce_info_gain,
         linear_gaussian_noise_variance=args.linear_gaussian_noise_variance,
         seed=args.seed
     )
@@ -494,7 +489,6 @@ def main():
         print(f"  Action confidence threshold: {config.action_confidence_threshold}")
         print(f"  Plackett-Luce learning rate: {config.plackett_luce_learning_rate}")
         print(f"  Plackett-Luce gradient steps: {config.plackett_luce_gradient_steps}")
-        print(f"  Plackett-Luce info gain: {config.plackett_luce_info_gain}")
         print(f"  Linear-Gaussian noise variance: {config.linear_gaussian_noise_variance}")
     else:
         print(f"  Learning rate: {config.learning_rate}")
@@ -659,7 +653,6 @@ def main():
             'participation_ratio_threshold': config.participation_ratio_threshold,
             'plackett_luce_learning_rate': config.plackett_luce_learning_rate,
             'plackett_luce_gradient_steps': config.plackett_luce_gradient_steps,
-            'plackett_luce_info_gain': config.plackett_luce_info_gain,
             'linear_gaussian_noise_variance': config.linear_gaussian_noise_variance,
         })
     else:
