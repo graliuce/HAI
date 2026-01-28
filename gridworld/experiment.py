@@ -58,6 +58,7 @@ class ExperimentConfig:
     allow_queries: bool = False
     query_budget: int = 5
     llm_model: str = "gpt-4o-mini"
+    query_mode: str = "sampled_actions"  # Options: "sampled_actions", "state", "beliefs", "preference"
 
     # Belief-based agent parameters
     action_confidence_threshold: float = 0.6  # Query when confidence < this (0-1, higher = query more often)
@@ -219,6 +220,7 @@ def create_belief_based_agent(
         num_property_values=config.num_property_values,
         llm_interface=llm_interface,
         query_budget=config.query_budget,
+        query_mode=config.query_mode,
         action_confidence_threshold=config.action_confidence_threshold,
         plackett_luce_learning_rate=config.plackett_luce_learning_rate,
         plackett_luce_gradient_steps=config.plackett_luce_gradient_steps,
@@ -300,6 +302,7 @@ def run_variable_property_experiment(
             allow_queries=config.allow_queries,
             query_budget=config.query_budget,
             llm_model=config.llm_model,
+            query_mode=config.query_mode,
             action_confidence_threshold=config.action_confidence_threshold,
             plackett_luce_learning_rate=config.plackett_luce_learning_rate,
             plackett_luce_gradient_steps=config.plackett_luce_gradient_steps,

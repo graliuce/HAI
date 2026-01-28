@@ -86,6 +86,25 @@ def parse_args():
         help="OpenAI API key (or set OPENAI_API_KEY env var)"
     )
 
+    # Query prompting mode (mutually exclusive)
+    query_mode_group = parser.add_mutually_exclusive_group()
+    query_mode_group.add_argument(
+        "--ask-with-sampled-actions", action="store_true",
+        help="Query mode: Include Thompson sampling votes in prompt (default)"
+    )
+    query_mode_group.add_argument(
+        "--ask-with-state", action="store_true",
+        help="Query mode: Include objects on board with properties/distance and human-collected objects"
+    )
+    query_mode_group.add_argument(
+        "--ask-with-beliefs", action="store_true",
+        help="Query mode: Include unique features with distance to closest object and robot beliefs (mean/variance)"
+    )
+    query_mode_group.add_argument(
+        "--ask-preference-with-state", action="store_true",
+        help="Query mode: Ask which object the human prefers between exactly two objects on the board"
+    )
+
     # Belief-based agent parameters
     parser.add_argument(
         "--action-confidence-threshold", type=float, default=0.3,
@@ -246,6 +265,17 @@ def main():
         print("Continuing without queries...")
         args.allow_queries = False
 
+    # Determine query mode
+    if args.ask_with_state:
+        query_mode = "state"
+    elif args.ask_with_beliefs:
+        query_mode = "beliefs"
+    elif args.ask_preference_with_state:
+        query_mode = "preference"
+    else:
+        # Default to sampled actions mode
+        query_mode = "sampled_actions"
+
     # Create config
     config = ExperimentConfig(
         grid_size=args.grid_size,
@@ -255,6 +285,7 @@ def main():
         allow_queries=args.allow_queries,
         query_budget=args.query_budget,
         llm_model=args.llm_model,
+        query_mode=query_mode,
         action_confidence_threshold=args.action_confidence_threshold,
         plackett_luce_learning_rate=args.plackett_luce_learning_rate,
         plackett_luce_gradient_steps=args.plackett_luce_gradient_steps,
@@ -285,6 +316,7 @@ def main():
     print(f"  Queries: {query_status}")
     if config.allow_queries:
         print(f"  Query budget: {config.query_budget}")
+        print(f"  Query mode: {config.query_mode}")
         print(f"  LLM model: {config.llm_model}")
 
     # Save results
@@ -379,6 +411,7 @@ def main():
         'num_eval_episodes': config.num_eval_episodes,
         'allow_queries': config.allow_queries,
         'query_budget': config.query_budget,
+        'query_mode': config.query_mode,
         'llm_model': config.llm_model,
         'num_seeds': args.num_seeds,
         'base_seed': args.seed,

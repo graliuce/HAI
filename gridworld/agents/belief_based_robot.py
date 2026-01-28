@@ -352,6 +352,7 @@ class BeliefBasedRobotAgent:
         num_property_values: int = 5,
         llm_interface: Optional[LLMInterface] = None,
         query_budget: int = 5,
+        query_mode: str = "sampled_actions",
         action_confidence_threshold: float = 0.6,
         plackett_luce_learning_rate: float = 0.1,
         plackett_luce_gradient_steps: int = 5,
@@ -367,6 +368,11 @@ class BeliefBasedRobotAgent:
             num_property_values: Number of values per property category
             llm_interface: Interface to LLM for queries
             query_budget: Maximum queries per episode
+            query_mode: Mode for query generation. Options:
+                - "sampled_actions": Include Thompson sampling votes in prompt (default)
+                - "state": Include objects on board with properties/distance and human-collected objects
+                - "beliefs": Include unique features with distance and robot beliefs (mean/variance)
+                - "preference": Ask which object the human prefers between two objects
             action_confidence_threshold: Trigger query when action confidence < this value.
                 Action confidence measures how consistently posterior samples agree on the
                 best object to target. Range [0, 1]:
@@ -385,6 +391,7 @@ class BeliefBasedRobotAgent:
         self.num_property_values = num_property_values
         self.llm = llm_interface
         self.query_budget = query_budget
+        self.query_mode = query_mode
         self.action_confidence_threshold = action_confidence_threshold
         self.pl_learning_rate = plackett_luce_learning_rate
         self.pl_gradient_steps = plackett_luce_gradient_steps
@@ -727,6 +734,12 @@ class BeliefBasedRobotAgent:
         """
         Execute a query to the human and return extracted weights.
 
+        The query generation method depends on self.query_mode:
+        - "sampled_actions": Use Thompson sampling votes (default)
+        - "state": Include objects with properties/distance and human-collected objects
+        - "beliefs": Include unique features with distance and robot beliefs (mean/variance)
+        - "preference": Ask which object the human prefers between two objects
+
         Returns:
             Tuple of (weights dict, query string, response string)
         """
@@ -735,6 +748,7 @@ class BeliefBasedRobotAgent:
 
         # Gather board properties
         objects = observation.get('objects', {})
+        robot_position = observation.get('robot_position', (0, 0))
         board_properties = []
         for obj_data in objects.values():
             board_properties.extend(obj_data['properties'].values())
@@ -747,30 +761,15 @@ class BeliefBasedRobotAgent:
             collected_properties.extend(collected['properties'].values())
         collected_properties = list(dict.fromkeys(collected_properties))
 
-        # Compute Thompson sampling vote distribution for features
-        # Run Thompson sampling to see which objects are selected
-        confidence, best_obj, details = self._compute_action_confidence(observation, num_samples=100)
-        
-        # Extract feature vote counts from Thompson sampling
-        thompson_votes = self._compute_feature_votes_from_thompson(observation, details)
-
-        # Print Thompson sampling vote distribution if verbose
-        if self.verbose:
-            print("\n[Thompson Sampling Vote Distribution]")
-            print(f"{'Feature':<15} | {'Normalized Value':<20}")
-            print("-" * 38)
-            # Sort by normalized value (descending) for better readability
-            sorted_votes = sorted(thompson_votes.items(), key=lambda x: x[1], reverse=True)
-            for feature, norm_value in sorted_votes:
-                print(f"{feature:<15} | {norm_value:<20.3f}")
-            print()
-
-        # Generate query
-        query = self.llm.generate_query(
-            board_properties,
-            thompson_votes,
-            self.active_categories
-        )
+        # Generate query based on mode
+        if self.query_mode == "state":
+            query = self._generate_query_state_mode(observation, robot_position)
+        elif self.query_mode == "beliefs":
+            query = self._generate_query_beliefs_mode(observation, robot_position)
+        elif self.query_mode == "preference":
+            return self._execute_preference_query(observation, robot_position, board_properties, collected_properties)
+        else:  # "sampled_actions" (default)
+            query = self._generate_query_sampled_actions_mode(observation, board_properties)
 
         # Get human response
         response = self.human_responder.respond_to_query(
@@ -804,7 +803,225 @@ class BeliefBasedRobotAgent:
             'response': response,
             'weights': property_weights,
             'board_properties': board_properties,
-            'collected_properties': collected_properties
+            'collected_properties': collected_properties,
+            'query_mode': self.query_mode
+        })
+        self.queries_used += 1
+
+        return property_weights, query, response
+
+    def _generate_query_sampled_actions_mode(self, observation: dict, board_properties: List[str]) -> str:
+        """Generate query using Thompson sampling votes (default mode)."""
+        # Compute Thompson sampling vote distribution for features
+        confidence, best_obj, details = self._compute_action_confidence(observation, num_samples=100)
+
+        # Extract feature vote counts from Thompson sampling
+        thompson_votes = self._compute_feature_votes_from_thompson(observation, details)
+
+        # Print Thompson sampling vote distribution if verbose
+        if self.verbose:
+            print("\n[Thompson Sampling Vote Distribution]")
+            print(f"{'Feature':<15} | {'Normalized Value':<20}")
+            print("-" * 38)
+            sorted_votes = sorted(thompson_votes.items(), key=lambda x: x[1], reverse=True)
+            for feature, norm_value in sorted_votes:
+                print(f"{feature:<15} | {norm_value:<20.3f}")
+            print()
+
+        return self.llm.generate_query(
+            board_properties,
+            thompson_votes,
+            self.active_categories
+        )
+
+    def _generate_query_state_mode(self, observation: dict, robot_position: Tuple[int, int]) -> str:
+        """Generate query using objects on board with properties/distance and human-collected objects."""
+        objects = observation.get('objects', {})
+        human_collected = observation.get('human_collected', [])
+
+        # Format objects info
+        objects_info = []
+        for obj_id, obj_data in objects.items():
+            objects_info.append({
+                'id': obj_id,
+                'position': obj_data['position'],
+                'properties': obj_data['properties']
+            })
+
+        # Format collected objects info
+        collected_objects_info = []
+        for collected in human_collected:
+            collected_objects_info.append({
+                'id': collected.get('id', 'unknown'),
+                'properties': collected['properties']
+            })
+
+        if self.verbose:
+            print(f"\n[Query Mode: state]")
+            print(f"  Objects on board: {len(objects_info)}")
+            print(f"  Human collected: {len(collected_objects_info)}")
+
+        return self.llm.generate_query_with_state(
+            objects_info,
+            collected_objects_info,
+            robot_position
+        )
+
+    def _generate_query_beliefs_mode(self, observation: dict, robot_position: Tuple[int, int]) -> str:
+        """Generate query using unique features with distance and robot beliefs."""
+        objects = observation.get('objects', {})
+
+        # Compute feature distances (distance to closest object with each feature)
+        feature_distances = {}
+        for feature in self.feature_names:
+            min_dist = float('inf')
+            for obj_data in objects.values():
+                if feature in obj_data['properties'].values():
+                    pos = obj_data['position']
+                    dist = ((pos[0] - robot_position[0])**2 + (pos[1] - robot_position[1])**2)**0.5
+                    min_dist = min(min_dist, dist)
+            if min_dist < float('inf'):
+                feature_distances[feature] = min_dist
+
+        # Get belief mean and variance for each feature
+        belief_mean = {}
+        belief_variance = {}
+        if self.belief is not None:
+            for i, feature in enumerate(self.feature_names):
+                belief_mean[feature] = self.belief.mean[i]
+                belief_variance[feature] = self.belief.covariance[i, i]
+
+        if self.verbose:
+            print(f"\n[Query Mode: beliefs]")
+            print(f"  Features on board: {len(feature_distances)}")
+            if belief_mean:
+                print("  Top 5 features by mean:")
+                sorted_by_mean = sorted(belief_mean.items(), key=lambda x: x[1], reverse=True)[:5]
+                for feat, mean in sorted_by_mean:
+                    var = belief_variance.get(feat, 0)
+                    print(f"    {feat}: mean={mean:.3f}, var={var:.3f}")
+
+        return self.llm.generate_query_with_beliefs(
+            feature_distances,
+            belief_mean,
+            belief_variance
+        )
+
+    def _execute_preference_query(
+        self,
+        observation: dict,
+        robot_position: Tuple[int, int],
+        board_properties: List[str],
+        collected_properties: List[str]
+    ) -> Tuple[Dict[str, float], str, str]:
+        """Execute a preference query asking which of two objects the human prefers."""
+        objects = observation.get('objects', {})
+
+        if len(objects) < 2:
+            # Not enough objects to compare
+            return {}, "", ""
+
+        # Select two objects to compare
+        # Strategy: Pick two objects with high uncertainty (variance in predicted value)
+        object_list = list(objects.items())
+
+        if self.belief is not None:
+            # Score each object by variance in predicted reward
+            object_scores = []
+            for obj_id, obj_data in object_list:
+                feature_vec = self.belief.get_object_feature_vector(obj_data['properties'])
+                # Compute variance of predicted reward: var(w^T x) = x^T Sigma x
+                pred_var = feature_vec @ self.belief.covariance @ feature_vec
+                object_scores.append((obj_id, obj_data, pred_var))
+
+            # Sort by variance (descending) and pick top 2
+            object_scores.sort(key=lambda x: x[2], reverse=True)
+            obj1_id, obj1_data, _ = object_scores[0]
+            obj2_id, obj2_data, _ = object_scores[1] if len(object_scores) > 1 else object_scores[0]
+        else:
+            # Random selection if no belief
+            obj1_id, obj1_data = object_list[0]
+            obj2_id, obj2_data = object_list[1] if len(object_list) > 1 else object_list[0]
+
+        object1_info = {
+            'id': obj1_id,
+            'position': obj1_data['position'],
+            'properties': obj1_data['properties']
+        }
+        object2_info = {
+            'id': obj2_id,
+            'position': obj2_data['position'],
+            'properties': obj2_data['properties']
+        }
+
+        if self.verbose:
+            print(f"\n[Query Mode: preference]")
+            print(f"  Object A: {object1_info['properties']}")
+            print(f"  Object B: {object2_info['properties']}")
+
+        # Generate preference query
+        query = self.llm.generate_preference_query(
+            object1_info,
+            object2_info,
+            robot_position
+        )
+
+        # Get human response
+        response = self.human_responder.respond_to_query(
+            query,
+            board_properties,
+            collected_properties
+        )
+
+        # Interpret preference response
+        preference = self.llm.interpret_preference_response(
+            query,
+            response,
+            object1_info,
+            object2_info
+        )
+
+        # Convert preference to weights
+        # If human prefers object A, increase weights for A's features, decrease for B's
+        property_weights = {f: 0.0 for f in self.feature_names}
+
+        if preference == 1:
+            # Human prefers object A
+            for prop_val in object1_info['properties'].values():
+                if prop_val in property_weights:
+                    property_weights[prop_val] = 1.0
+            for prop_val in object2_info['properties'].values():
+                if prop_val in property_weights:
+                    property_weights[prop_val] = -1.0
+        elif preference == 2:
+            # Human prefers object B
+            for prop_val in object2_info['properties'].values():
+                if prop_val in property_weights:
+                    property_weights[prop_val] = 1.0
+            for prop_val in object1_info['properties'].values():
+                if prop_val in property_weights:
+                    property_weights[prop_val] = -1.0
+
+        # Normalize using L2 norm
+        weights_array = np.array([property_weights.get(f, 0.0) for f in self.feature_names])
+        l2_norm = np.linalg.norm(weights_array)
+        if l2_norm > 1e-10:
+            weights_array = weights_array / l2_norm
+            property_weights = {
+                f: weights_array[i] for i, f in enumerate(self.feature_names)
+            }
+
+        # Store in history
+        self.query_history.append({
+            'query': query,
+            'response': response,
+            'weights': property_weights,
+            'board_properties': board_properties,
+            'collected_properties': collected_properties,
+            'query_mode': self.query_mode,
+            'object1': object1_info,
+            'object2': object2_info,
+            'preference': preference
         })
         self.queries_used += 1
 
