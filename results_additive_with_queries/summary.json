@@ -21,40 +21,40 @@
   },
   "summary": {
     "1": {
-      "eval_mean": 1.7248003902582902,
+      "eval_mean": 2.064212583973133,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 0.36666666666666664
+      "avg_queries": 0.5333333333333333
     },
     "2": {
-      "eval_mean": 2.180852681752613,
+      "eval_mean": 2.6274030044989485,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 1.6
+      "avg_queries": 1.8333333333333333
     },
     "3": {
-      "eval_mean": 2.08307685404339,
+      "eval_mean": 2.141997554804397,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 2.5
+      "avg_queries": 2.3666666666666667
     },
     "4": {
-      "eval_mean": 2.441071381808674,
+      "eval_mean": 2.709042305337633,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 2.033333333333333
+      "avg_queries": 2.3333333333333335
     },
     "5": {
-      "eval_mean": 0.21535985547118106,
+      "eval_mean": 0.9691297218736914,
       "eval_std": 0.0,
       "eval_sem": 0.0,
-      "avg_queries": 2.566666666666667
+      "avg_queries": 2.3333333333333335
     },
     "training": {
       "train_mean": 0.0,
       "train_std": 0.0
     }
   },
-  "correlation": -0.49327060929945116,
-  "timestamp": "2026-01-26T19:32:14.035415"
+  "correlation": -0.4798341951669428,
+  "timestamp": "2026-01-27T11:11:15.024176"
 }

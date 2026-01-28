@@ -270,57 +270,59 @@ class GaussianBeliefState:
     ):
         """
         Update beliefs using Linear-Gaussian observation model.
-
-        The LLM provides a noisy observation of the true weights:
-        y = w + epsilon, where epsilon ~ N(0, R)
-
-        Standard Bayesian linear Gaussian update:
-        mu_new = mu + K(y - mu)
-        Sigma_new = (I - K) * Sigma
-
-        where K = Sigma * (Sigma + R)^{-1}
-
-        Args:
-            observed_weights: Dict mapping feature names to observed weights
-                             (from LLM, already L2-normalized)
-            observation_noise_variance: Variance of observation noise
+        
+        Only updates features with non-zero observed weights.
+        Unmentioned features remain unchanged (no observation).
+        
+        For observed features, the update is:
+        y_i = w_i + epsilon, where epsilon ~ N(0, R_i)
+        
+        Using standard Kalman filter equations for partial observations.
         """
-        # Convert observed weights to vector (only for features we have)
-        y = np.zeros(self.num_features)
-        observed_mask = np.zeros(self.num_features, dtype=bool)
-
+        # Get indices and values of observed features (non-zero weights only)
+        observed_indices = []
+        observed_values = []
+        
         for name, weight in observed_weights.items():
-            if name in self.feature_to_idx:
-                idx = self.feature_to_idx[name]
-                y[idx] = weight
-                observed_mask[idx] = True
-
-        # For features not mentioned, we don't update (treat as no observation)
-        # Build observation matrix H that selects only observed features
-        num_observed = np.sum(observed_mask)
-        if num_observed == 0:
-            return  # No update if no features were observed
-
-        # Full observation model for simplicity (observe all features)
-        # Noise covariance (diagonal)
-        R = np.eye(self.num_features) * observation_noise_variance
-
-        # Kalman gain: K = Sigma * (Sigma + R)^{-1}
-        S = self.covariance + R
-        K = np.linalg.solve(S.T, self.covariance.T).T  # More stable than direct inverse
-
-        # Update mean: mu_new = mu + K * (y - mu)
-        innovation = y - self.mean
+            if name in self.feature_to_idx and abs(weight) > 1e-10:
+                observed_indices.append(self.feature_to_idx[name])
+                observed_values.append(weight)
+        
+        if not observed_indices:
+            return  # No update if nothing observed
+        
+        # Build observation matrix H (selects only observed features)
+        num_observed = len(observed_indices)
+        H = np.zeros((num_observed, self.num_features))
+        for i, idx in enumerate(observed_indices):
+            H[i, idx] = 1.0
+        
+        y = np.array(observed_values)  # Observations
+        
+        # Observation noise covariance (diagonal)
+        R = np.eye(num_observed) * observation_noise_variance
+        
+        # Kalman filter update
+        # Innovation: y - H*mu
+        innovation = y - H @ self.mean
+        
+        # Innovation covariance: S = H*Sigma*H^T + R
+        S = H @ self.covariance @ H.T + R
+        
+        # Kalman gain: K = Sigma*H^T*S^{-1}
+        K = self.covariance @ H.T @ np.linalg.solve(S, np.eye(num_observed))
+        
+        # Update mean: mu_new = mu + K*innovation
         self.mean = self.mean + K @ innovation
-
-        # Update covariance: Sigma_new = (I - K) * Sigma
+        
+        # Update covariance: Sigma_new = (I - K*H)*Sigma
         I = np.eye(self.num_features)
-        self.covariance = (I - K) @ self.covariance
-
+        self.covariance = (I - K @ H) @ self.covariance
+        
         # Ensure symmetry and positive definiteness
         self.covariance = 0.5 * (self.covariance + self.covariance.T)
         eigenvalues, eigenvectors = np.linalg.eigh(self.covariance)
-        eigenvalues = np.maximum(eigenvalues, 0.001)  # Minimum variance
+        eigenvalues = np.maximum(eigenvalues, 0.001)
         self.covariance = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
 
 
