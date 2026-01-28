@@ -71,7 +71,7 @@ class LLMInterface:
     def generate_query(
         self, 
         board_properties: List[str],
-        collected_properties: List[str],
+        thompson_votes: Dict[str, float],
         active_categories: List[str]
     ) -> str:
         """
@@ -79,7 +79,7 @@ class LLMInterface:
         
         Args:
             board_properties: List of property values currently on the board
-            collected_properties: List of property values from objects human has collected
+            thompson_votes: Dict mapping feature names to normalized vote frequencies from Thompson sampling
             active_categories: List of active property categories
             
         Returns:
@@ -87,20 +87,43 @@ class LLMInterface:
         """
         # Format the properties for the prompt
         board_props_str = ", ".join(board_properties) if board_properties else "none yet"
-        collected_props_str = ", ".join(collected_properties) if collected_properties else "none yet"
         
-        prompt = f"""You are helping a robot learn what properties the human values. The robot and human are working together to collect objects in a shared environment, and they both want to maximize the same reward. The robot needs to understand what properties give reward so it can help collect valuable objects.
+        # Format Thompson sampling votes as a table
+        if thompson_votes:
+            # Sort by normalized value (descending) for better readability
+            sorted_votes = sorted(thompson_votes.items(), key=lambda x: x[1], reverse=True)
+            
+            # Create table header
+            beliefs_str = "Robot's Current Beliefs (from Thompson Sampling):\n"
+            beliefs_str += f"{'Feature':<15} | {'Normalized Value':<20}\n"
+            beliefs_str += "-" * 38 + "\n"
+            
+            # Add rows for each feature
+            for feature, norm_value in sorted_votes:
+                beliefs_str += f"{feature:<15} | {norm_value:<20.3f}\n"
+        else:
+            beliefs_str = "Robot's Current Beliefs: (no beliefs yet)"
+        
+        prompt = f"""You are a robot working with a human to collect objects in a shared environment. You both want to maximize the same reward. You need to understand what properties give reward so you can help collect valuable objects.
 
 Current situation:
 - Properties on the board: {board_props_str}
-- Properties the human has collected so far: {collected_props_str}
 
-Generate a brief, informative question to the human that will help the robot decide which objects to collect.s
+{beliefs_str}
+
+The normalized value represents how often each feature appeared in objects selected during Thompson sampling (higher = more often selected).
+
+Generate an open-ended, informative question (1 sentence) to ask the human that will help you decide which features are valuable to collect. 
+
+Focus on asking about properties that are:
+1. Relevant (currently on the board)
+2. Important (have a high normalized value)
+2. Uncertain according to your current beliefs
 
 Output only the question, nothing else."""
 
         messages = [
-            {"role": "system", "content": "You are a helpful assistant that generates clear, concise questions."},
+            {"role": "system", "content": "You are a robot assistant that generates clear, strategic questions to reduce uncertainty."},
             {"role": "user", "content": prompt}
         ]
         
@@ -225,106 +248,53 @@ class SimulatedHumanResponder:
         board_props_str = ", ".join(board_properties) if board_properties else "none"
         collected_props_str = ", ".join(collected_properties) if collected_properties else "none"
 
+        # Determine rewarding properties string (different format for each mode)
         if self.property_value_rewards:
-            # Additive valuation mode
-            return self._respond_additive_mode(query, board_props_str, collected_props_str,
-                                               board_properties)
-        else:
-            # Standard mode
-            return self._respond_standard_mode(query, board_props_str, collected_props_str)
+            # Additive mode: list all properties with their actual reward values
+            sorted_rewards = sorted(
+                self.property_value_rewards.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )
+            if self.verbose:
+                print(f"[SimulatedHuman] Property value rewards:")
+                for prop, reward in sorted_rewards:
+                    print(f"    {prop}: {reward:+.2f}")
+            
+            # Format all reward values for the prompt
+            rewards_list = [f"{prop}: {reward:+.2f}" for prop, reward in sorted_rewards]
+            rewarding_props_str = "\n  ".join(rewards_list)
+            
+            prompt = f"""You are simulating a human in a collaborative environment where you and a robot are collecting objects together to maximize reward.
 
-    def _respond_standard_mode(
-        self,
-        query: str,
-        board_props_str: str,
-        collected_props_str: str
-    ) -> str:
-        """Generate response for standard (binary reward) mode."""
-        rewarding_props_str = ", ".join(self.reward_properties)
-
-        if self.verbose:
-            print(f"[SimulatedHuman] Rewarding properties: {self.reward_properties}")
-
-        prompt = f"""You are simulating a human in a collaborative environment where you and a robot are collecting objects together to maximize reward.
-
-Your true preferences (properties that give reward): {rewarding_props_str}
-
-Current context:
-- Properties on the board: {board_props_str}
-- Properties you have collected: {collected_props_str}
+Your true reward values for each property:
+  {rewarding_props_str}
 
 Question from the robot: "{query}"
 
-Generate a natural, helpful response (1-3 sentences) that answers the question. Do not provide information that is not directly asked for in the question.
-Do not mention any preferences that are not in your list of true preferences.
+Generate a natural, helpful, and accurate response (1-3 sentences) that answers the question based on your TRUE reward values above. Be specific and accurate about which properties have positive vs negative rewards.
+Do not provide information that is not directly asked for in the question.
+
+Output only your response, nothing else."""
+        else:
+            # Standard mode: list rewarding properties
+            rewarding_props_str = ", ".join(self.reward_properties)
+            if self.verbose:
+                print(f"[SimulatedHuman] Rewarding properties: {self.reward_properties}")
+            
+            prompt = f"""You are simulating a human in a collaborative environment where you and a robot are collecting objects together to maximize reward.
+
+Your true preferences (properties that give reward): {rewarding_props_str}
+
+Question from the robot: "{query}"
+
+Generate a natural, helpful, and accurate response (1-3 sentences) that answers the question. Do not provide information that is not directly asked for in the question.
+Do not mention any preferences that are not in your list of true preferences. Don't mention numbers explicitly but instead describe the values in natural language.
 
 Output only your response, nothing else."""
 
         messages = [
             {"role": "system", "content": "You are simulating a helpful human collaborator who clearly communicates their preferences."},
-            {"role": "user", "content": prompt}
-        ]
-
-        response = self.llm._call_llm(messages, temperature=0.7)
-        return response.strip()
-
-    def _respond_additive_mode(
-        self,
-        query: str,
-        board_props_str: str,
-        collected_props_str: str,
-        board_properties: List[str]
-    ) -> str:
-        """Generate response for additive valuation mode."""
-        # Sort rewards by value (highest first)
-        sorted_rewards = sorted(
-            self.property_value_rewards.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )
-
-        # Format the reward values for the prompt
-        rewards_str = "\n".join([
-            f"  - {prop}: {reward:+.2f}"
-            for prop, reward in sorted_rewards
-        ])
-
-        # Identify relevant properties (those on the board)
-        relevant_rewards = {
-            prop: reward for prop, reward in self.property_value_rewards.items()
-            if prop in board_properties
-        }
-        sorted_relevant = sorted(relevant_rewards.items(), key=lambda x: x[1], reverse=True)
-
-        if self.verbose:
-            print(f"[SimulatedHuman] Property value rewards:")
-            for prop, reward in sorted_rewards:
-                print(f"    {prop}: {reward:+.2f}")
-
-        prompt = f"""You are simulating a human in a collaborative environment where you and a robot are collecting objects together to maximize reward.
-
-In this environment, each property value contributes a certain amount to the reward. The total reward for an object is the sum of rewards from all its property values.
-
-YOUR TRUE REWARD VALUES FOR EACH PROPERTY:
-{rewards_str}
-
-Current context:
-- Properties on the board: {board_props_str}
-- Properties you have collected: {collected_props_str}
-
-Question from the robot: "{query}"
-
-IMPORTANT INSTRUCTIONS:
-1. Generate a natural, helpful response (1-3 sentences)
-2. Only reveal 1-2 pieces of information at a time - do NOT list all reward values
-3. Focus on what's most relevant to the question or most helpful (e.g., mention high-value or low-value properties)
-4. Be specific about whether a property adds or subtracts from reward, but don't give exact numerical values
-5. You can say things like "blue is quite valuable" or "avoid square objects, they hurt your score"
-
-Output only your response, nothing else."""
-
-        messages = [
-            {"role": "system", "content": "You are simulating a helpful human collaborator who communicates preferences naturally, revealing information gradually rather than all at once."},
             {"role": "user", "content": prompt}
         ]
 

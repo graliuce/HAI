@@ -29,8 +29,10 @@ from gridworld.experiment import (
     run_variable_property_experiment,
     summarize_variable_results,
     render_episode_gif,
+    create_belief_based_agent,
 )
 from gridworld.agents.query_augmented_robot import QueryAugmentedRobotAgent
+from gridworld.agents.belief_based_robot import BeliefBasedRobotAgent
 
 
 def load_dotenv(path=".env"):
@@ -139,6 +141,33 @@ def parse_args():
     parser.add_argument(
         "--api-key", type=str, default=None,
         help="OpenAI API key (or set OPENAI_API_KEY env var)"
+    )
+
+    # Belief-based agent parameters
+    parser.add_argument(
+        "--use-belief-based-agent", action="store_true",
+        help="Use belief-based agent with Bayesian preference modeling instead of DQN"
+    )
+    parser.add_argument(
+        "--participation-ratio-threshold", type=float, default=3.0,
+        help="[DEPRECATED] Use --action-confidence-threshold instead (default: 3.0)"
+    )
+    parser.add_argument(
+        "--action-confidence-threshold", type=float, default=0.3,
+        help="Query when action confidence < this (0-1). Higher = query more. Uses Thompson "
+             "sampling to measure agreement on best object. (default: 0.3 = query when <30% agree)"
+    )
+    parser.add_argument(
+        "--plackett-luce-learning-rate", type=float, default=0.2,
+        help="Learning rate for Plackett-Luce belief updates (default: 0.2)"
+    )
+    parser.add_argument(
+        "--plackett-luce-gradient-steps", type=int, default=5,
+        help="Number of gradient steps per Plackett-Luce update (default: 5)"
+    )
+    parser.add_argument(
+        "--linear-gaussian-noise-variance", type=float, default=0.5,
+        help="Noise variance for linear-Gaussian updates from queries (default: 1.0)"
     )
 
     # Experiment parameters
@@ -426,10 +455,17 @@ def main():
         query_threshold=args.query_threshold,
         blend_factor=args.blend_factor,
         llm_model=args.llm_model,
+        use_belief_based_agent=args.use_belief_based_agent,
+        participation_ratio_threshold=args.participation_ratio_threshold,
+        action_confidence_threshold=args.action_confidence_threshold,
+        plackett_luce_learning_rate=args.plackett_luce_learning_rate,
+        plackett_luce_gradient_steps=args.plackett_luce_gradient_steps,
+        linear_gaussian_noise_variance=args.linear_gaussian_noise_variance,
         seed=args.seed
     )
 
     query_status = "ENABLED" if config.allow_queries else "DISABLED"
+    agent_type = "BELIEF-BASED" if config.use_belief_based_agent else "DQN"
 
     print("=" * 60)
     print("Gridworld Variable Property Training Experiment")
@@ -443,19 +479,27 @@ def main():
     print(f"  Additive valuation mode: {'ENABLED' if config.additive_valuation else 'DISABLED'}")
     print(f"  Training episodes: {config.num_train_episodes}")
     print(f"  Evaluation episodes: {config.num_eval_episodes}")
-    print(f"  Learning rate: {config.learning_rate}")
-    print(f"  Hidden dims: {config.hidden_dims}")
     print(f"  Property counts to test: {property_counts}")
     print(f"  Number of seeds: {args.num_seeds}")
     print(f"  Base seed: {args.seed}")
     print(f"  Model directory: {args.model_dir}")
     print(f"  Output directory: {args.output_dir}")
+    print(f"\n  === AGENT TYPE: {agent_type} ===")
+    if config.use_belief_based_agent:
+        print(f"  Action confidence threshold: {config.action_confidence_threshold}")
+        print(f"  Plackett-Luce learning rate: {config.plackett_luce_learning_rate}")
+        print(f"  Plackett-Luce gradient steps: {config.plackett_luce_gradient_steps}")
+        print(f"  Linear-Gaussian noise variance: {config.linear_gaussian_noise_variance}")
+    else:
+        print(f"  Learning rate: {config.learning_rate}")
+        print(f"  Hidden dims: {config.hidden_dims}")
     print(f"\n  === QUERY SETTINGS ===")
     print(f"  Queries: {query_status}")
     if config.allow_queries:
         print(f"  Query budget: {config.query_budget}")
-        print(f"  Query threshold: {config.query_threshold}")
-        print(f"  Blend factor: {config.blend_factor}")
+        if not config.use_belief_based_agent:
+            print(f"  Query threshold: {config.query_threshold}")
+            print(f"  Blend factor: {config.blend_factor}")
         print(f"  LLM model: {config.llm_model}")
 
     # Save results
@@ -471,7 +515,7 @@ def main():
         from gridworld.experiment import create_robot_agent, get_model_path
         from gridworld.llm_interface import LLMInterface
 
-        # Create environment and robot
+        # Create environment
         env = GridWorld(
             grid_size=config.grid_size,
             num_objects=config.num_objects,
@@ -482,32 +526,39 @@ def main():
             additive_valuation=config.additive_valuation,
             seed=config.seed
         )
-        base_robot = create_robot_agent(config, env, verbose=False)
 
-        # Load trained model
-        model_path = get_model_path(config, args.model_dir)
-        if os.path.exists(model_path):
-            print(f"Loading model from: {model_path}")
-            base_robot.load(model_path)
+        # Create robot based on agent type
+        if config.use_belief_based_agent:
+            print("Setting up belief-based robot for GIF generation...")
+            robot = create_belief_based_agent(config, env, api_key, verbose=True)
+            print("Verbose mode enabled for belief tracking during GIF generation.")
         else:
-            print(f"WARNING: No trained model found at {model_path}")
-            print("GIFs will use untrained agent behavior.")
+            base_robot = create_robot_agent(config, env, verbose=False)
 
-        # Wrap in QueryAugmentedRobotAgent if queries are enabled
-        if config.allow_queries:
-            print("Setting up query-augmented robot for GIF generation...")
-            llm = LLMInterface(model=config.llm_model, api_key=api_key)
-            robot = QueryAugmentedRobotAgent(
-                base_agent=base_robot,
-                llm_interface=llm,
-                query_budget=config.query_budget,
-                blend_factor=config.blend_factor,
-                query_threshold=config.query_threshold,
-                verbose=True  # Enable verbose mode for detailed logging
-            )
-            print("Verbose mode enabled for query logging during GIF generation.")
-        else:
-            robot = base_robot
+            # Load trained model
+            model_path = get_model_path(config, args.model_dir)
+            if os.path.exists(model_path):
+                print(f"Loading model from: {model_path}")
+                base_robot.load(model_path)
+            else:
+                print(f"WARNING: No trained model found at {model_path}")
+                print("GIFs will use untrained agent behavior.")
+
+            # Wrap in QueryAugmentedRobotAgent if queries are enabled
+            if config.allow_queries:
+                print("Setting up query-augmented robot for GIF generation...")
+                llm = LLMInterface(model=config.llm_model, api_key=api_key)
+                robot = QueryAugmentedRobotAgent(
+                    base_agent=base_robot,
+                    llm_interface=llm,
+                    query_budget=config.query_budget,
+                    blend_factor=config.blend_factor,
+                    query_threshold=config.query_threshold,
+                    verbose=True  # Enable verbose mode for detailed logging
+                )
+                print("Verbose mode enabled for query logging during GIF generation.")
+            else:
+                robot = base_robot
 
         # Render GIFs
         render_episode_gifs(property_counts, args.output_dir, config, robot)
@@ -535,16 +586,21 @@ def main():
     # Print summary
     print("\n" + "=" * 60)
     print("RESULTS SUMMARY")
+    if config.use_belief_based_agent:
+        print("(Belief-Based Agent)")
+    else:
+        print("(DQN Agent)")
     print("=" * 60)
-    
-    if config.allow_queries:
+
+    prop_counts_only = sorted([k for k in summary.keys() if isinstance(k, int)])
+
+    if config.allow_queries or config.use_belief_based_agent:
         print(f"\n{'Props':<8} {'Eval Mean':<12} {'Eval Std':<12} {'Avg Queries':<15}")
         print("-" * 50)
-        prop_counts_only = sorted([k for k in summary.keys() if isinstance(k, int)])
         for num_props in prop_counts_only:
             s = summary[num_props]
             print(f"{num_props:<8} {s['eval_mean']:<12.2f} {s['eval_std']:<12.2f} {s.get('avg_queries', 0):<15.2f}")
-        
+
         # Print additional query statistics
         print("\n" + "-" * 60)
         print("QUERY STATISTICS PER PROPERTY COUNT")
@@ -556,7 +612,6 @@ def main():
     else:
         print(f"\n{'Props':<8} {'Eval Mean':<12} {'Eval Std':<12} {'Eval SEM':<12}")
         print("-" * 48)
-        prop_counts_only = sorted([k for k in summary.keys() if isinstance(k, int)])
         for num_props in prop_counts_only:
             s = summary[num_props]
             print(f"{num_props:<8} {s['eval_mean']:<12.2f} {s['eval_std']:<12.2f} {s['eval_sem']:<12.2f}")
@@ -570,8 +625,8 @@ def main():
     correlation = np.corrcoef(prop_counts_arr, eval_means_arr)[0, 1]
     print(f"\nCorrelation between property count and eval return: {correlation:.3f}")
 
-    # Print competitive options analysis if queries are enabled
-    if config.allow_queries:
+    # Print competitive options analysis if queries are enabled (DQN only)
+    if config.allow_queries and not config.use_belief_based_agent:
         print_entropy_analysis(results, property_counts, config)
 
     # Save summary
@@ -585,16 +640,28 @@ def main():
         'additive_valuation': config.additive_valuation,
         'num_train_episodes': config.num_train_episodes,
         'num_eval_episodes': config.num_eval_episodes,
-        'learning_rate': config.learning_rate,
-        'hidden_dims': config.hidden_dims,
         'allow_queries': config.allow_queries,
         'query_budget': config.query_budget,
-        'query_threshold': config.query_threshold,
-        'blend_factor': config.blend_factor,
         'llm_model': config.llm_model,
         'num_seeds': args.num_seeds,
         'base_seed': args.seed,
+        'use_belief_based_agent': config.use_belief_based_agent,
     }
+    # Add agent-specific parameters
+    if config.use_belief_based_agent:
+        config_dict.update({
+            'participation_ratio_threshold': config.participation_ratio_threshold,
+            'plackett_luce_learning_rate': config.plackett_luce_learning_rate,
+            'plackett_luce_gradient_steps': config.plackett_luce_gradient_steps,
+            'linear_gaussian_noise_variance': config.linear_gaussian_noise_variance,
+        })
+    else:
+        config_dict.update({
+            'learning_rate': config.learning_rate,
+            'hidden_dims': config.hidden_dims,
+            'query_threshold': config.query_threshold,
+            'blend_factor': config.blend_factor,
+        })
 
     summary_json = {str(k): v for k, v in summary.items()}
 

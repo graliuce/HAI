@@ -296,6 +296,64 @@ class QueryAugmentedRobotAgent:
 
         return should_query
     
+    def _compute_feature_votes_from_qvalues(self, observation: dict) -> Dict[str, float]:
+        """
+        Compute normalized feature distribution from Q-values (analogous to Thompson sampling).
+        
+        Uses softmax over Q-values (blended with beliefs if available) to get a probability
+        distribution over property actions, then maps to features.
+        
+        Args:
+            observation: Current observation
+            
+        Returns:
+            Dict mapping feature names to normalized frequencies
+        """
+        valid_actions = self.base_agent._get_valid_property_actions(observation)
+        
+        if len(valid_actions) == 0:
+            # Return uniform distribution if no valid actions
+            return {prop: 0.0 for prop in self.property_values}
+        
+        # Get Q-values from base agent
+        high_level_input = self.base_agent._encode_high_level_input(observation)
+        
+        with torch.no_grad():
+            state_tensor = torch.FloatTensor(high_level_input).unsqueeze(0)
+            state_tensor = state_tensor.to(self.base_agent.device)
+            q_values = self.base_agent.high_level_q_network(state_tensor)
+            q_values = q_values.cpu().numpy()[0]
+        
+        # If we have query-derived beliefs, blend Q-values with beliefs
+        if self.beliefs.has_queries:
+            belief_scores = np.array([
+                self.beliefs.query_weights.get(self.base_agent.property_values[a], 0.0)
+                for a in range(len(self.base_agent.property_values))
+            ])
+            
+            # Blend using the blending factor
+            blended_values = (1 - self.blend_factor) * q_values + self.blend_factor * belief_scores
+        else:
+            blended_values = q_values
+        
+        # Get values for valid actions only
+        valid_values = blended_values[valid_actions]
+        
+        # Convert to probability distribution via softmax
+        exp_values = np.exp(valid_values - np.max(valid_values))  # Subtract max for numerical stability
+        probabilities = exp_values / np.sum(exp_values)
+        
+        # Map to features (property values)
+        feature_votes = {}
+        for prop in self.property_values:
+            feature_votes[prop] = 0.0
+        
+        for idx, action_idx in enumerate(valid_actions):
+            prop_value = self.base_agent.property_values[action_idx]
+            feature_votes[prop_value] = probabilities[idx]
+        
+        return feature_votes
+    
     def _execute_query(self, observation: dict) -> Dict[str, float]:
         """
         Execute a query about property preferences.
@@ -322,10 +380,24 @@ class QueryAugmentedRobotAgent:
         # Remove duplicates while preserving order
         collected_properties = list(dict.fromkeys(collected_properties))
         
+        # Compute feature vote distribution from Q-values (analogous to Thompson sampling)
+        thompson_votes = self._compute_feature_votes_from_qvalues(observation)
+        
+        # Print Thompson sampling vote distribution if verbose
+        if self.verbose:
+            print("\n[Feature Vote Distribution (from Q-values)]")
+            print(f"{'Feature':<15} | {'Normalized Value':<20}")
+            print("-" * 38)
+            # Sort by normalized value (descending) for better readability
+            sorted_votes = sorted(thompson_votes.items(), key=lambda x: x[1], reverse=True)
+            for feature, norm_value in sorted_votes:
+                print(f"{feature:<15} | {norm_value:<20.3f}")
+            print()
+        
         # Generate query
         query = self.llm.generate_query(
             board_properties, 
-            collected_properties, 
+            thompson_votes, 
             self.active_categories
         )
         
