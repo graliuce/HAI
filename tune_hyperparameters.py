@@ -3,8 +3,8 @@
 Hyperparameter tuning script for the gridworld experiment.
 
 This script tunes:
-1. plackett-luce-learning-rate for additive valuations WITHOUT queries
-2. linear-gaussian-noise-variance for additive valuations WITH queries
+1. plackett-luce-learning-rate (WITHOUT queries)
+2. linear-gaussian-noise-variance (WITH queries)
 """
 
 import argparse
@@ -380,8 +380,6 @@ def tune_plackett_luce_lr_without_queries(
     print(f"Testing values: {values}")
     
     # Ensure required flags are set
-    base_args['additive-valuation'] = True
-    base_args['use-belief-based-agent'] = True
     base_args.pop('allow-queries', None)  # Remove if present
     
     results = []
@@ -413,8 +411,6 @@ def tune_linear_gaussian_noise_with_queries(
     print(f"Testing values: {values}")
     
     # Ensure required flags are set
-    base_args['additive-valuation'] = True
-    base_args['use-belief-based-agent'] = True
     base_args['allow-queries'] = True
     
     results = []
@@ -450,8 +446,6 @@ def tune_combined_with_queries(
     print(f"Total combinations: {len(pl_values) * len(lg_values)}")
     
     # Ensure required flags are set
-    base_args['additive-valuation'] = True
-    base_args['use-belief-based-agent'] = True
     base_args['allow-queries'] = True
     
     results = []

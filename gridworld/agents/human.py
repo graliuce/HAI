@@ -1,4 +1,4 @@
-"""Human agent with fixed greedy policy."""
+"""Human agent with fixed greedy policy for additive valuation mode."""
 
 from typing import Dict, Optional, Set, Tuple
 import heapq
@@ -8,44 +8,38 @@ class HumanAgent:
     """
     A simulated human agent that knows the reward specification.
 
-    Policy:
-    - Standard mode: Greedy - finds the nearest rewarding object by L2 distance
-      and takes the shortest path to collect it.
-    - Additive valuation mode: Targets object with highest reward/distance ratio.
+    Policy: Targets object with highest reward/distance ratio,
+    navigating toward it while avoiding negative-reward objects.
     """
 
     def __init__(self):
         """Initialize the human agent."""
         self.reward_properties: Set[str] = set()
         self.current_target: Optional[Tuple[int, int]] = None
-        self.additive_valuation: bool = False
         self.object_rewards: Dict[int, float] = {}
 
-    def reset(self, reward_properties: Set[str], additive_valuation: bool = False,
+    def reset(self, reward_properties: Set[str],
               object_rewards: Optional[Dict[int, float]] = None):
         """
         Reset the agent for a new episode.
 
         Args:
-            reward_properties: Set of property values that give reward
-            additive_valuation: Whether using additive valuation mode
-            object_rewards: Dict mapping object_id -> total reward (for additive mode)
+            reward_properties: Set of property values that give reward (kept for compatibility)
+            object_rewards: Dict mapping object_id -> total reward
         """
         self.reward_properties = reward_properties
         self.current_target = None
-        self.additive_valuation = additive_valuation
         self.object_rewards = object_rewards or {}
 
     def get_action(self, observation: dict) -> int:
         """
         Get the action for the human agent.
 
-        Policy:
-        - Standard mode: Find the nearest rewarding object by L2 distance
-        - Additive mode: Find the object with highest reward/distance ratio
+        Policy: Find the object with highest reward/distance ratio
+        and navigate toward it.
 
         Args:
-            observation: Full observation including reward_properties
+            observation: Full observation including object_rewards
 
         Returns:
             Action (0=up, 1=down, 2=left, 3=right, 4=stay)
@@ -53,53 +47,14 @@ class HumanAgent:
         position = observation['human_position']
         objects = observation['objects']
 
-        # Update object_rewards from observation if in additive mode
-        if observation.get('additive_valuation', False):
-            self.additive_valuation = True
-            self.object_rewards = observation.get('object_rewards', {})
+        # Update object_rewards from observation
+        self.object_rewards = observation.get('object_rewards', {})
 
-        if self.additive_valuation:
-            return self._get_action_additive(position, objects, observation)
-        else:
-            return self._get_action_standard(position, objects)
-
-    def _get_action_standard(self, position: Tuple[int, int], objects: dict) -> int:
-        """Standard mode: target nearest rewarding object."""
-        # Find all rewarding objects
-        rewarding_objects = []
-        for obj_id, obj_data in objects.items():
-            props = obj_data['properties']
-            # Check if any property value matches reward properties
-            for prop_value in props.values():
-                if prop_value in self.reward_properties:
-                    rewarding_objects.append((obj_id, obj_data['position']))
-                    break
-
-        if not rewarding_objects:
-            # No rewarding objects left, stay in place
-            return 4
-
-        # Find nearest rewarding object by L2 distance
-        nearest_pos = None
-        nearest_dist = float('inf')
-
-        for obj_id, obj_pos in rewarding_objects:
-            dist = self._l2_distance(position, obj_pos)
-            if dist < nearest_dist:
-                nearest_dist = dist
-                nearest_pos = obj_pos
-
-        if nearest_pos is None:
-            return 4
-
-        self.current_target = nearest_pos
-
-        # Get action toward nearest object (avoiding non-rewarding objects)
-        return self._get_action_toward(position, nearest_pos, objects)
+        return self._get_action_additive(position, objects, observation)
 
     def _get_action_additive(self, position: Tuple[int, int], objects: dict,
                               observation: dict) -> int:
-        """Additive mode: target object with highest reward/distance ratio."""
+        """Target object with highest reward/distance ratio."""
         best_target = None
         best_ratio = float('-inf')
         object_rewards = observation.get('object_rewards', {})
@@ -176,69 +131,6 @@ class HumanAgent:
         # If all preferred actions lead to negative-reward objects, stay
         return 4
 
-    def _get_action_toward(
-        self,
-        current: Tuple[int, int],
-        target: Tuple[int, int],
-        objects: dict
-    ) -> int:
-        """
-        Get the action to move from current position toward target.
-
-        Uses a simple greedy approach: move in the direction that
-        reduces the distance to the target the most, while avoiding
-        non-rewarding objects.
-
-        Args:
-            current: Current position (x, y)
-            target: Target position (x, y)
-            objects: Dictionary of objects in the environment
-
-        Returns:
-            Action (0=up, 1=down, 2=left, 3=right, 4=stay)
-        """
-        cx, cy = current
-        tx, ty = target
-
-        if current == target:
-            return 4  # stay
-
-        # Create a map of non-rewarding object positions
-        non_rewarding_positions = set()
-        for obj_id, obj_data in objects.items():
-            props = obj_data['properties']
-            is_rewarding = any(prop_value in self.reward_properties 
-                             for prop_value in props.values())
-            if not is_rewarding:
-                non_rewarding_positions.add(obj_data['position'])
-
-        dx = tx - cx
-        dy = ty - cy
-
-        # Try actions in order of preference based on distance to target
-        actions = []
-        if abs(dx) >= abs(dy):
-            # Prioritize horizontal movement
-            if dx > 0:
-                actions = [3, 1 if dy > 0 else 0, 2]  # right, then vertical, then left
-            else:
-                actions = [2, 1 if dy > 0 else 0, 3]  # left, then vertical, then right
-        else:
-            # Prioritize vertical movement
-            if dy > 0:
-                actions = [1, 3 if dx > 0 else 2, 0]  # down, then horizontal, then up
-            else:
-                actions = [0, 3 if dx > 0 else 2, 1]  # up, then horizontal, then down
-
-        # Try each action, avoiding non-rewarding objects
-        for action in actions:
-            next_pos = self._get_next_position(current, action)
-            if next_pos not in non_rewarding_positions:
-                return action
-
-        # If all preferred actions lead to non-rewarding objects, stay
-        return 4
-
     def _get_next_position(self, position: Tuple[int, int], action: int) -> Tuple[int, int]:
         """Get the next position after taking an action."""
         x, y = position
@@ -272,28 +164,24 @@ class HumanAgentAStar(HumanAgent):
         self.grid_size = grid_size
         self.path: list = []
 
-    def reset(self, reward_properties: Set[str], additive_valuation: bool = False,
+    def reset(self, reward_properties: Set[str],
               object_rewards: Optional[Dict[int, float]] = None):
         """Reset the agent."""
-        super().reset(reward_properties, additive_valuation, object_rewards)
+        super().reset(reward_properties, object_rewards)
         self.path = []
 
     def get_action(self, observation: dict) -> int:
-        """Get action using A* pathfinding that avoids non-rewarding objects."""
-        # Delegate to parent class for additive valuation mode
-        if observation.get('additive_valuation', False) or self.additive_valuation:
-            return super().get_action(observation)
+        """Get action using A* pathfinding that avoids negative-reward objects."""
         position = observation['human_position']
         objects = observation['objects']
+        object_rewards = observation.get('object_rewards', {})
 
-        # Build set of non-rewarding object positions
-        non_rewarding_positions = set()
+        # Build set of negative-reward object positions (to avoid)
+        avoid_positions = set()
         for obj_id, obj_data in objects.items():
-            props = obj_data['properties']
-            is_rewarding = any(prop_value in self.reward_properties 
-                             for prop_value in props.values())
-            if not is_rewarding:
-                non_rewarding_positions.add(obj_data['position'])
+            reward = object_rewards.get(obj_id, 0.0)
+            if reward < 0:
+                avoid_positions.add(obj_data['position'])
 
         # If we have a valid path, follow it
         if self.path and self.path[0] != position:
@@ -306,26 +194,25 @@ class HumanAgentAStar(HumanAgent):
             next_pos = self.path[0]
             return self._get_action_to_adjacent(position, next_pos)
 
-        # Find nearest rewarding object
-        rewarding_positions = []
-        for obj_id, obj_data in objects.items():
-            props = obj_data['properties']
-            for prop_value in props.values():
-                if prop_value in self.reward_properties:
-                    rewarding_positions.append(obj_data['position'])
-                    break
+        # Find best target (highest reward/distance ratio with positive reward)
+        best_target = None
+        best_ratio = float('-inf')
 
-        if not rewarding_positions:
+        for obj_id, obj_data in objects.items():
+            obj_pos = obj_data['position']
+            reward = object_rewards.get(obj_id, 0.0)
+            if reward > 0:  # Only target positive reward objects
+                dist = max(1.0, self._l2_distance(position, obj_pos))
+                ratio = reward / dist
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_target = obj_pos
+
+        if best_target is None:
             return 4  # stay
 
-        # Find nearest by L2 distance
-        nearest_pos = min(
-            rewarding_positions,
-            key=lambda p: self._l2_distance(position, p)
-        )
-
-        # Calculate path using A* (avoiding non-rewarding objects)
-        self.path = self._astar(position, nearest_pos, non_rewarding_positions)
+        # Calculate path using A* (avoiding negative-reward objects)
+        self.path = self._astar(position, best_target, avoid_positions)
 
         if len(self.path) <= 1:
             return 4  # Already at target or no path
@@ -367,7 +254,7 @@ class HumanAgentAStar(HumanAgent):
         Args:
             start: Starting position
             goal: Goal position
-            obstacles: Set of positions to avoid (non-rewarding objects)
+            obstacles: Set of positions to avoid (negative-reward objects)
 
         Returns:
             List of positions from start to goal.

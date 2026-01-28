@@ -352,7 +352,6 @@ class BeliefBasedRobotAgent:
         num_property_values: int = 5,
         llm_interface: Optional[LLMInterface] = None,
         query_budget: int = 5,
-        participation_ratio_threshold: float = 3.0,
         action_confidence_threshold: float = 0.6,
         plackett_luce_learning_rate: float = 0.1,
         plackett_luce_gradient_steps: int = 5,
@@ -368,7 +367,6 @@ class BeliefBasedRobotAgent:
             num_property_values: Number of values per property category
             llm_interface: Interface to LLM for queries
             query_budget: Maximum queries per episode
-            participation_ratio_threshold: (DEPRECATED) Old trigger using participation ratio
             action_confidence_threshold: Trigger query when action confidence < this value.
                 Action confidence measures how consistently posterior samples agree on the
                 best object to target. Range [0, 1]:
@@ -387,7 +385,6 @@ class BeliefBasedRobotAgent:
         self.num_property_values = num_property_values
         self.llm = llm_interface
         self.query_budget = query_budget
-        self.pr_threshold = participation_ratio_threshold
         self.action_confidence_threshold = action_confidence_threshold
         self.pl_learning_rate = plackett_luce_learning_rate
         self.pl_gradient_steps = plackett_luce_gradient_steps
