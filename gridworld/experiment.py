@@ -58,13 +58,16 @@ class ExperimentConfig:
     allow_queries: bool = False
     query_budget: int = 5
     llm_model: str = "gpt-4o-mini"
-    query_mode: str = "sampled_actions"  # Options: "sampled_actions", "state", "beliefs", "preference"
+    query_mode: str = "sampled_actions"  # Options: "sampled_actions", "state", "beliefs", "preference", "eig"
 
     # Belief-based agent parameters
     action_confidence_threshold: float = 0.6  # Query when confidence < this (0-1, higher = query more often)
     plackett_luce_learning_rate: float = 0.1
     plackett_luce_gradient_steps: int = 5
     linear_gaussian_noise_variance: float = 1.0
+
+    # EIG-specific parameters
+    eig_num_mc_samples: int = 100
 
     # Random seed
     seed: Optional[int] = None
@@ -83,6 +86,10 @@ class EpisodeResult:
     queries_used: int = 0
     query_history: List[Dict] = field(default_factory=list)
     entropy_history: List[Dict] = field(default_factory=list)
+    # Information gain tracking
+    information_gain_history: List[Dict] = field(default_factory=list)
+    average_information_gain: float = 0.0
+    total_information_gain: float = 0.0
 
 
 @dataclass
@@ -97,6 +104,10 @@ class VariableExperimentResult:
     eval_avg_queries_per_property: Dict[int, float] = field(default_factory=dict)
     # Entropy statistics
     eval_entropy_stats_per_property: Dict[int, Dict] = field(default_factory=dict)
+    # Information gain statistics
+    eval_avg_ig_per_property: Dict[int, float] = field(default_factory=dict)
+    eval_total_ig_per_property: Dict[int, float] = field(default_factory=dict)
+    eval_ig_per_query_per_property: Dict[int, List[float]] = field(default_factory=dict)
 
 
 def run_episode(
@@ -178,6 +189,26 @@ def run_episode(
     result.queries_used = stats['queries_used']
     result.query_history = stats['query_history']
     result.entropy_history = stats.get('entropy_history', [])
+    
+    # Information gain statistics
+    result.information_gain_history = stats.get('information_gain_history', [])
+    result.average_information_gain = stats.get('average_information_gain', 0.0)
+    result.total_information_gain = stats.get('total_information_gain', 0.0)
+
+    # Print episode summary
+    if episode_num is not None:
+        print(f"\n{'='*100}")
+        print(f"EPISODE {episode_num} COMPLETE")
+        print(f"{'='*100}")
+        print(f"Final Robot Reward: {total_reward:.2f}")
+        print(f"Robot Collected: {result.robot_collected} objects ({result.rewarding_collected_by_robot} rewarding)")
+        print(f"Human Collected: {result.human_collected} objects")
+        print(f"Total Steps: {result.total_steps}")
+        if result.queries_used > 0:
+            print(f"Queries Used: {result.queries_used}")
+            if result.average_information_gain > 0:
+                print(f"Average Information Gain per Query: {result.average_information_gain:.4f} nats")
+        print(f"{'='*100}\n")
 
     return result
 
@@ -225,6 +256,7 @@ def create_belief_based_agent(
         plackett_luce_learning_rate=config.plackett_luce_learning_rate,
         plackett_luce_gradient_steps=config.plackett_luce_gradient_steps,
         linear_gaussian_noise_variance=config.linear_gaussian_noise_variance,
+        eig_num_mc_samples=config.eig_num_mc_samples,
         verbose=verbose,
         seed=config.seed
     )
@@ -307,6 +339,7 @@ def run_variable_property_experiment(
             plackett_luce_learning_rate=config.plackett_luce_learning_rate,
             plackett_luce_gradient_steps=config.plackett_luce_gradient_steps,
             linear_gaussian_noise_variance=config.linear_gaussian_noise_variance,
+            eig_num_mc_samples=config.eig_num_mc_samples,
             seed=seed
         )
 
@@ -325,6 +358,10 @@ def run_variable_property_experiment(
             print(f"  Linear-Gaussian noise variance: {current_config.linear_gaussian_noise_variance}")
             if current_config.allow_queries:
                 print(f"  Query budget: {current_config.query_budget}")
+                print(f"  Query mode: {current_config.query_mode}")
+                if current_config.query_mode == "eig":
+                    print(f"  EIG MC samples: {current_config.eig_num_mc_samples}")
+                    print(f"  EIG features per option: One per active property category")
 
         eval_robot = create_belief_based_agent(
             current_config, env, api_key, verbose=True
@@ -353,8 +390,27 @@ def run_variable_property_experiment(
             result.eval_queries_per_property[num_props] = eval_queries
             result.eval_avg_queries_per_property[num_props] = np.mean(eval_queries)
 
-            # Collect entropy/uncertainty statistics
+            # Collect information gain statistics
             if current_config.allow_queries:
+                all_ig_values = []
+                total_ig_sum = 0.0
+                
+                for r in eval_results:
+                    if r.information_gain_history:
+                        for ig_entry in r.information_gain_history:
+                            all_ig_values.append(ig_entry['information_gain'])
+                        total_ig_sum += r.total_information_gain
+                
+                if all_ig_values:
+                    result.eval_avg_ig_per_property[num_props] = np.mean(all_ig_values)
+                    result.eval_total_ig_per_property[num_props] = total_ig_sum / len(eval_results)
+                    result.eval_ig_per_query_per_property[num_props] = all_ig_values
+                else:
+                    result.eval_avg_ig_per_property[num_props] = 0.0
+                    result.eval_total_ig_per_property[num_props] = 0.0
+                    result.eval_ig_per_query_per_property[num_props] = []
+
+                # Collect entropy/uncertainty statistics
                 all_entropy_history = []
                 for r in eval_results:
                     all_entropy_history.extend(r.entropy_history)
@@ -377,10 +433,13 @@ def run_variable_property_experiment(
 
             if verbose:
                 query_info = f", avg queries={result.eval_avg_queries_per_property[num_props]:.2f}" if current_config.allow_queries else ""
+                ig_info = ""
+                if current_config.allow_queries and num_props in result.eval_avg_ig_per_property:
+                    ig_info = f", avg IG={result.eval_avg_ig_per_property[num_props]:.4f}"
                 print(f"  {num_props} properties: "
                       f"mean={result.eval_means_per_property[num_props]:.2f}, "
                       f"std={result.eval_stds_per_property[num_props]:.2f}"
-                      f"{query_info}")
+                      f"{query_info}{ig_info}")
 
         all_results.append(result)
         trained_robot = eval_robot
@@ -396,14 +455,62 @@ def summarize_variable_results(
     summary = {}
 
     for num_props in property_counts:
+        # Collect all individual episode returns across all seeds
+        all_eval_returns = []
+        for r in results:
+            all_eval_returns.extend(r.eval_results_per_property[num_props])
+        
+        # Collect means per seed (for backwards compatibility)
         eval_means = [r.eval_means_per_property[num_props] for r in results]
         avg_queries = [r.eval_avg_queries_per_property.get(num_props, 0) for r in results]
+        
+        # Aggregate information gain statistics
+        avg_ig_values = [r.eval_avg_ig_per_property.get(num_props, 0) for r in results if num_props in r.eval_avg_ig_per_property]
+        total_ig_values = [r.eval_total_ig_per_property.get(num_props, 0) for r in results if num_props in r.eval_total_ig_per_property]
+
+        # Compute 95% confidence interval across all episodes and seeds
+        mean_return = np.mean(all_eval_returns)
+        std_return = np.std(all_eval_returns, ddof=1)  # Sample std
+        n_samples = len(all_eval_returns)
+        
+        if n_samples > 1:
+            # Use t-distribution for 95% CI (t-critical values approximation)
+            # For small n, use exact t-values; for large n, converges to 1.96
+            if n_samples <= 30:
+                # t-critical values for common small sample sizes at 95% CI
+                t_critical_values = {
+                    2: 12.706, 3: 4.303, 4: 3.182, 5: 2.776, 6: 2.571,
+                    7: 2.447, 8: 2.365, 9: 2.306, 10: 2.262, 11: 2.228,
+                    12: 2.201, 13: 2.179, 14: 2.160, 15: 2.145, 16: 2.131,
+                    17: 2.120, 18: 2.110, 19: 2.101, 20: 2.093, 21: 2.086,
+                    22: 2.080, 23: 2.074, 24: 2.069, 25: 2.064, 26: 2.060,
+                    27: 2.056, 28: 2.052, 29: 2.048, 30: 2.045
+                }
+                t_crit = t_critical_values.get(n_samples, 2.045)
+            else:
+                # For large samples, use normal approximation
+                t_crit = 1.96
+            
+            sem = std_return / np.sqrt(n_samples)
+            ci_95_error = t_crit * sem
+            ci_95_lower = mean_return - ci_95_error
+            ci_95_upper = mean_return + ci_95_error
+        else:
+            ci_95_lower = mean_return
+            ci_95_upper = mean_return
+            ci_95_error = 0.0
 
         summary[num_props] = {
-            'eval_mean': np.mean(eval_means),
-            'eval_std': np.std(eval_means),
-            'eval_sem': np.std(eval_means) / np.sqrt(len(eval_means)) if len(eval_means) > 1 else 0.0,
+            'eval_mean': mean_return,
+            'eval_std': std_return,
+            'eval_sem': std_return / np.sqrt(n_samples) if n_samples > 1 else 0.0,
+            'ci_95_lower': ci_95_lower,
+            'ci_95_upper': ci_95_upper,
+            'ci_95_error': ci_95_error,
+            'n_samples': n_samples,
             'avg_queries': np.mean(avg_queries),
+            'avg_information_gain': np.mean(avg_ig_values) if avg_ig_values else 0.0,
+            'avg_total_information_gain': np.mean(total_ig_values) if total_ig_values else 0.0,
         }
 
     return summary
@@ -416,8 +523,12 @@ def render_episode_gif(
     max_steps: int = 50,
     fps: int = 4,
     trained_robot: Optional[BeliefBasedRobotAgent] = None
-) -> None:
-    """Render and save a GIF of an entire episode."""
+) -> float:
+    """Render and save a GIF of an entire episode.
+    
+    Returns:
+        Robot's total reward for the episode
+    """
     import imageio
 
     if trained_robot is None:
@@ -454,16 +565,19 @@ def render_episode_gif(
     frames = []
     frames.append(vis_env.render_to_array())
 
+    robot_total_reward = 0.0
     step = 0
     while not vis_env.done and step < max_steps:
         human_action = human.get_action(human_obs)
         robot_action = robot.get_action(observation, training=False)
 
         vis_env.human_position = vis_env._apply_action(vis_env.human_position, human_action)
-        observation, _, _, _ = vis_env.step(robot_action)
+        observation, robot_reward, _, _ = vis_env.step(robot_action)
+        robot_total_reward += robot_reward
         human_obs = vis_env.get_human_observation()
 
         frames.append(vis_env.render_to_array())
         step += 1
 
     imageio.mimsave(output_path, frames, fps=fps, loop=0)
+    return robot_total_reward

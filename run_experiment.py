@@ -104,6 +104,11 @@ def parse_args():
         "--ask-preference-with-state", action="store_true",
         help="Query mode: Ask which object the human prefers between exactly two objects on the board"
     )
+    query_mode_group.add_argument(
+        "--ask-eig", action="store_true",
+        help="Query mode: Use Expected Information Gain (EIG) to select optimal pairwise comparison queries. "
+             "Based on Bayesian Optimal Experimental Design (BOED) framework."
+    )
 
     # Belief-based agent parameters
     parser.add_argument(
@@ -122,6 +127,12 @@ def parse_args():
     parser.add_argument(
         "--linear-gaussian-noise-variance", type=float, default=0.5,
         help="Noise variance for linear-Gaussian updates from queries (default: 0.5)"
+    )
+
+    # EIG-specific parameters
+    parser.add_argument(
+        "--eig-mc-samples", type=int, default=100,
+        help="Number of Monte Carlo samples for EIG estimation (default: 100)"
     )
 
     # Experiment parameters
@@ -169,13 +180,13 @@ def plot_results(
     """Plot results from variable property experiment."""
     prop_counts = sorted([k for k in summary.keys() if isinstance(k, int)])
     eval_means = [summary[p]['eval_mean'] for p in prop_counts]
-    eval_sems = [summary[p]['eval_sem'] for p in prop_counts]
+    eval_ci_errors = [summary[p]['ci_95_error'] for p in prop_counts]
 
     fig, ax = plt.subplots(figsize=(10, 6))
 
     bars = ax.bar(
         prop_counts, eval_means,
-        yerr=eval_sems,
+        yerr=eval_ci_errors,
         capsize=5,
         color='tab:blue',
         edgecolor='black',
@@ -184,7 +195,7 @@ def plot_results(
 
     query_info = f", Query Budget={config.query_budget}" if config.allow_queries else ""
     ax.set_xlabel('Number of Distinct Properties (Test Condition)', fontsize=12)
-    ax.set_ylabel('Evaluation Return (Mean +/- SEM)', fontsize=12)
+    ax.set_ylabel('Evaluation Return (Mean with 95% CI)', fontsize=12)
     ax.set_title(
         f'Performance vs. Test Property Count\n'
         f'(Objects={config.num_objects}{query_info})',
@@ -226,6 +237,23 @@ def plot_results(
         print(f"Query usage plot saved to: {plot_path}")
         plt.close()
 
+        # Plot information gain if available
+        avg_ig = [summary[p].get('avg_information_gain', 0) for p in prop_counts]
+        if any(ig > 0 for ig in avg_ig):
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.bar(prop_counts, avg_ig, color='tab:green', edgecolor='black', alpha=0.8)
+            ax.set_xlabel('Number of Distinct Properties', fontsize=12)
+            ax.set_ylabel('Average Information Gain per Query (nats)', fontsize=12)
+            ax.set_title(f'Information Gain vs. Property Count\n(Mode={config.query_mode})', fontsize=14)
+            ax.set_xticks(prop_counts)
+            ax.grid(True, alpha=0.3, axis='y')
+
+            plt.tight_layout()
+            plot_path = os.path.join(output_dir, 'information_gain_vs_properties.png')
+            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+            print(f"Information gain plot saved to: {plot_path}")
+            plt.close()
+
 
 def render_episode_gifs(property_counts: list, output_dir: str,
                         config: ExperimentConfig, trained_robot):
@@ -234,7 +262,7 @@ def render_episode_gifs(property_counts: list, output_dir: str,
 
     for num_props in property_counts:
         output_path = os.path.join(output_dir, f'episode_{num_props}_props.gif')
-        render_episode_gif(
+        robot_reward = render_episode_gif(
             num_distinct_properties=num_props,
             config=config,
             output_path=output_path,
@@ -243,6 +271,7 @@ def render_episode_gifs(property_counts: list, output_dir: str,
             trained_robot=trained_robot
         )
         print(f"  Saved GIF for {num_props} distinct properties: {output_path}")
+        print(f"    Final robot reward: {robot_reward:.2f}")
 
 
 def main():
@@ -272,6 +301,8 @@ def main():
         query_mode = "beliefs"
     elif args.ask_preference_with_state:
         query_mode = "preference"
+    elif args.ask_eig:
+        query_mode = "eig"
     else:
         # Default to sampled actions mode
         query_mode = "sampled_actions"
@@ -290,6 +321,7 @@ def main():
         plackett_luce_learning_rate=args.plackett_luce_learning_rate,
         plackett_luce_gradient_steps=args.plackett_luce_gradient_steps,
         linear_gaussian_noise_variance=args.linear_gaussian_noise_variance,
+        eig_num_mc_samples=args.eig_mc_samples,
         seed=args.seed
     )
 
@@ -318,6 +350,10 @@ def main():
         print(f"  Query budget: {config.query_budget}")
         print(f"  Query mode: {config.query_mode}")
         print(f"  LLM model: {config.llm_model}")
+        if config.query_mode == "eig":
+            print(f"\n  === EIG SETTINGS ===")
+            print(f"  EIG Monte Carlo samples: {config.eig_num_mc_samples}")
+            print(f"  EIG features per option: One per active property category")
 
     # Save results
     os.makedirs(args.output_dir, exist_ok=True)
@@ -375,11 +411,35 @@ def main():
     prop_counts_only = sorted([k for k in summary.keys() if isinstance(k, int)])
 
     if config.allow_queries:
-        print(f"\n{'Props':<8} {'Eval Mean':<12} {'Eval Std':<12} {'Avg Queries':<15}")
-        print("-" * 50)
-        for num_props in prop_counts_only:
-            s = summary[num_props]
-            print(f"{num_props:<8} {s['eval_mean']:<12.2f} {s['eval_std']:<12.2f} {s.get('avg_queries', 0):<15.2f}")
+        # Check if we have information gain data
+        has_ig_data = any(summary[p].get('avg_information_gain', 0) > 0 for p in prop_counts_only)
+        
+        if has_ig_data:
+            print(f"\n{'Props':<8} {'Eval Mean':<12} {'95% CI':<20} {'Avg Queries':<15} {'Avg IG/Query':<15} {'Avg Total IG':<15}")
+            print("-" * 95)
+            for num_props in prop_counts_only:
+                s = summary[num_props]
+                ci_str = f"[{s['ci_95_lower']:.2f}, {s['ci_95_upper']:.2f}]"
+                print(f"{num_props:<8} {s['eval_mean']:<12.2f} {ci_str:<20} "
+                      f"{s.get('avg_queries', 0):<15.2f} {s.get('avg_information_gain', 0):<15.4f} "
+                      f"{s.get('avg_total_information_gain', 0):<15.4f}")
+            
+            # Print information gain summary
+            print("\n" + "-" * 60)
+            print("INFORMATION GAIN SUMMARY")
+            print("-" * 60)
+            all_avg_ig = [summary[p].get('avg_information_gain', 0) for p in prop_counts_only]
+            all_total_ig = [summary[p].get('avg_total_information_gain', 0) for p in prop_counts_only]
+            print(f"Average IG per query (across all property counts): {np.mean(all_avg_ig):.4f} nats")
+            print(f"Average total IG per episode (across all property counts): {np.mean(all_total_ig):.4f} nats")
+            print(f"Query mode: {config.query_mode}")
+        else:
+            print(f"\n{'Props':<8} {'Eval Mean':<12} {'95% CI':<20} {'Avg Queries':<15}")
+            print("-" * 60)
+            for num_props in prop_counts_only:
+                s = summary[num_props]
+                ci_str = f"[{s['ci_95_lower']:.2f}, {s['ci_95_upper']:.2f}]"
+                print(f"{num_props:<8} {s['eval_mean']:<12.2f} {ci_str:<20} {s.get('avg_queries', 0):<15.2f}")
 
         # Print additional query statistics
         print("\n" + "-" * 60)
@@ -390,11 +450,12 @@ def main():
         print(f"Average queries per episode (across all property counts): {avg_overall:.2f}")
         print(f"Query budget per episode: {config.query_budget}")
     else:
-        print(f"\n{'Props':<8} {'Eval Mean':<12} {'Eval Std':<12} {'Eval SEM':<12}")
-        print("-" * 48)
+        print(f"\n{'Props':<8} {'Eval Mean':<12} {'95% CI':<20} {'n':<8}")
+        print("-" * 52)
         for num_props in prop_counts_only:
             s = summary[num_props]
-            print(f"{num_props:<8} {s['eval_mean']:<12.2f} {s['eval_std']:<12.2f} {s['eval_sem']:<12.2f}")
+            ci_str = f"[{s['ci_95_lower']:.2f}, {s['ci_95_upper']:.2f}]"
+            print(f"{num_props:<8} {s['eval_mean']:<12.2f} {ci_str:<20} {s['n_samples']:<8}")
 
     # Correlation
     prop_counts_arr = np.array(prop_counts_only)
@@ -419,6 +480,7 @@ def main():
         'plackett_luce_learning_rate': config.plackett_luce_learning_rate,
         'plackett_luce_gradient_steps': config.plackett_luce_gradient_steps,
         'linear_gaussian_noise_variance': config.linear_gaussian_noise_variance,
+        'eig_num_mc_samples': config.eig_num_mc_samples,
     }
 
     summary_json = {str(k): v for k, v in summary.items()}

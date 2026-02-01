@@ -317,6 +317,47 @@ Output only the question, nothing else."""
 
         response = self._call_llm(messages, temperature=0.7)
         return response.strip()
+
+    def generate_eig_query(
+        self,
+        features_a: List[str],
+        features_b: List[str],
+        active_categories: List[str]
+    ) -> str:
+        """
+        Generate a natural language query for an EIG-selected pairwise comparison.
+        
+        This verbalizes the optimal query selected by the Expected Information Gain algorithm.
+        
+        Args:
+            features_a: List of feature names for option A
+            features_b: List of feature names for option B  
+            active_categories: List of active property categories
+            
+        Returns:
+            Natural language question string
+        """
+        features_a_str = " and ".join(features_a) if features_a else "no special features"
+        features_b_str = " and ".join(features_b) if features_b else "no special features"
+        
+        prompt = f"""You are a robot working with a human to collect objects in a shared environment. You both want to maximize the same reward.
+
+You want to ask the human which of these two hypothetical objects they would prefer:
+
+Option A: An object with features: {features_a_str}
+Option B: An object with features: {features_b_str}
+
+Generate a natural, clear question (1-2 sentences) asking the human which option they would prefer. Make sure to clearly describe both options.
+
+Output only the question, nothing else."""
+
+        messages = [
+            {"role": "system", "content": "You are a robot assistant that generates clear, strategic questions to learn preferences."},
+            {"role": "user", "content": prompt}
+        ]
+
+        response = self._call_llm(messages, temperature=0.7)
+        return response.strip()
     
     def interpret_response(
         self,
@@ -440,6 +481,57 @@ Output ONLY one of the following:
         else:
             return None
 
+    def interpret_eig_response(
+        self,
+        query: str,
+        response: str,
+        features_a: List[str],
+        features_b: List[str]
+    ) -> Optional[int]:
+        """
+        Interpret which option the human prefers from their response to an EIG query.
+        
+        Args:
+            query: The question that was asked
+            response: The human's response
+            features_a: Features of option A
+            features_b: Features of option B
+            
+        Returns:
+            1 if human prefers option A, 2 if human prefers option B, None if unclear
+        """
+        features_a_str = ", ".join(features_a)
+        features_b_str = ", ".join(features_b)
+        
+        prompt = f"""Analyze this conversation and determine which option the human prefers.
+
+Question asked: "{query}"
+Human's response: "{response}"
+
+Option A has features: {features_a_str}
+Option B has features: {features_b_str}
+
+Based on the human's response, which option do they prefer?
+Output ONLY one of the following:
+- "A" if they prefer Option A
+- "B" if they prefer Option B
+- "unclear" if you cannot determine their preference"""
+
+        messages = [
+            {"role": "system", "content": "You are an assistant that extracts preferences from natural language. Output only A, B, or unclear."},
+            {"role": "user", "content": prompt}
+        ]
+
+        llm_output = self._call_llm(messages, temperature=0.3)
+        llm_output = llm_output.strip().upper()
+
+        if "A" in llm_output and "B" not in llm_output:
+            return 1
+        elif "B" in llm_output and "A" not in llm_output:
+            return 2
+        else:
+            return None
+
 
 class SimulatedHumanResponder:
     """Simulates human responses using LLM based on true reward properties."""
@@ -529,6 +621,91 @@ Question from the robot: "{query}"
 
 Generate a natural, helpful, and accurate response (1-3 sentences) that answers the question. Do not provide information that is not directly asked for in the question.
 Do not mention any preferences that are not in your list of true preferences. Don't mention numbers explicitly but instead describe the values in natural language.
+
+Output only your response, nothing else."""
+
+        messages = [
+            {"role": "system", "content": "You are simulating a helpful human collaborator who clearly communicates their preferences."},
+            {"role": "user", "content": prompt}
+        ]
+
+        response = self.llm._call_llm(messages, temperature=0.7)
+        return response.strip()
+
+    def respond_to_eig_query(
+        self,
+        query: str,
+        features_a: List[str],
+        features_b: List[str],
+        board_properties: List[str],
+        collected_properties: List[str]
+    ) -> str:
+        """
+        Generate a response to an EIG-based pairwise preference query.
+        
+        Args:
+            query: The question asked
+            features_a: Features of option A
+            features_b: Features of option B
+            board_properties: Properties currently on the board
+            collected_properties: Properties from objects human has collected
+            
+        Returns:
+            Natural language response indicating preference
+        """
+        # Calculate utility of each option based on true preferences
+        if self.property_value_rewards:
+            utility_a = sum(self.property_value_rewards.get(f, 0) for f in features_a)
+            utility_b = sum(self.property_value_rewards.get(f, 0) for f in features_b)
+        else:
+            utility_a = sum(1 for f in features_a if f in self.reward_properties)
+            utility_b = sum(1 for f in features_b if f in self.reward_properties)
+        
+        if utility_a > utility_b:
+            preferred = "A"
+            preferred_features = features_a
+        elif utility_b > utility_a:
+            preferred = "B"
+            preferred_features = features_b
+        else:
+            # Equal utility - pick randomly or A by default
+            preferred = "A"
+            preferred_features = features_a
+        
+        features_a_str = ", ".join(features_a)
+        features_b_str = ", ".join(features_b)
+        
+        if self.verbose:
+            print(f"[SimulatedHuman] EIG Query Response:")
+            print(f"    Option A features: {features_a}, utility: {utility_a}")
+            print(f"    Option B features: {features_b}, utility: {utility_b}")
+            print(f"    Preferred: {preferred}")
+        
+        # Format rewarding properties for context
+        if self.property_value_rewards:
+            sorted_rewards = sorted(
+                self.property_value_rewards.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )
+            rewards_list = [f"{prop}: {reward:+.2f}" for prop, reward in sorted_rewards]
+            rewarding_props_str = "\n  ".join(rewards_list)
+        else:
+            rewarding_props_str = ", ".join(self.reward_properties)
+        
+        prompt = f"""You are simulating a human in a collaborative environment where you and a robot are collecting objects together to maximize reward.
+
+Your true reward values for each property:
+  {rewarding_props_str}
+
+Question from the robot: "{query}"
+
+Option A has features: {features_a_str}
+Option B has features: {features_b_str}
+
+Based on your TRUE reward values, you prefer Option {preferred} because it has features: {", ".join(preferred_features)}.
+
+Generate a natural, helpful response (1-2 sentences) that clearly indicates you prefer Option {preferred}. Be specific about why you prefer it based on the features.
 
 Output only your response, nothing else."""
 
