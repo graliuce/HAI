@@ -2,7 +2,7 @@
 
 import json
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 
 
@@ -69,41 +69,43 @@ class LLMInterface:
             return response_text
     
     def generate_query(
-        self, 
+        self,
         board_properties: List[str],
         thompson_votes: Dict[str, float],
         active_categories: List[str]
     ) -> str:
         """
-        Generate a natural language query about property preferences.
-        
+        Generate a natural language query about property preferences using Thompson sampling votes.
+
+        This is the default "sampled_actions" mode.
+
         Args:
             board_properties: List of property values currently on the board
             thompson_votes: Dict mapping feature names to normalized vote frequencies from Thompson sampling
             active_categories: List of active property categories
-            
+
         Returns:
             Natural language question string
         """
         # Format the properties for the prompt
         board_props_str = ", ".join(board_properties) if board_properties else "none yet"
-        
+
         # Format Thompson sampling votes as a table
         if thompson_votes:
             # Sort by normalized value (descending) for better readability
             sorted_votes = sorted(thompson_votes.items(), key=lambda x: x[1], reverse=True)
-            
+
             # Create table header
             beliefs_str = "Robot's Current Beliefs (from Thompson Sampling):\n"
             beliefs_str += f"{'Feature':<15} | {'Normalized Value':<20}\n"
             beliefs_str += "-" * 38 + "\n"
-            
+
             # Add rows for each feature
             for feature, norm_value in sorted_votes:
                 beliefs_str += f"{feature:<15} | {norm_value:<20.3f}\n"
         else:
             beliefs_str = "Robot's Current Beliefs: (no beliefs yet)"
-        
+
         prompt = f"""You are a robot working with a human to collect objects in a shared environment. You both want to maximize the same reward. You need to understand what properties give reward so you can help collect valuable objects.
 
 Current situation:
@@ -113,7 +115,7 @@ Current situation:
 
 The normalized value represents how often each feature appeared in objects selected during Thompson sampling (higher = more often selected).
 
-Generate an open-ended, informative question (1 sentence) to ask the human that will help you decide which features are valuable to collect. 
+Generate an open-ended, informative question (1 sentence) to ask the human that will help you decide which features are valuable to collect.
 
 Focus on asking about properties that are:
 1. Relevant (currently on the board)
@@ -126,7 +128,234 @@ Output only the question, nothing else."""
             {"role": "system", "content": "You are a robot assistant that generates clear, strategic questions to reduce uncertainty."},
             {"role": "user", "content": prompt}
         ]
+
+        response = self._call_llm(messages, temperature=0.7)
+        return response.strip()
+
+    def generate_query_with_state(
+        self,
+        objects_info: List[Dict],
+        collected_objects_info: List[Dict],
+        robot_position: Tuple[int, int]
+    ) -> str:
+        """
+        Generate a query using board state: objects with properties/distance and human-collected objects.
+
+        This is the "state" mode.
+
+        Args:
+            objects_info: List of dicts with 'id', 'position', 'properties' for each object on board
+            collected_objects_info: List of dicts with 'id', 'properties' for human-collected objects
+            robot_position: Robot's current position (x, y)
+
+        Returns:
+            Natural language question string
+        """
+        # Format objects on board with distance
+        if objects_info:
+            objects_str = "Objects on the board:\n"
+            objects_str += f"{'ID':<4} | {'Properties':<50} | {'Distance':<8}\n"
+            objects_str += "-" * 68 + "\n"
+
+            for obj in objects_info:
+                props = obj['properties']
+                props_str = ", ".join(f"{k}={v}" for k, v in props.items())
+                pos = obj['position']
+                dist = ((pos[0] - robot_position[0])**2 + (pos[1] - robot_position[1])**2)**0.5
+                objects_str += f"{obj['id']:<4} | {props_str:<50} | {dist:<8.2f}\n"
+        else:
+            objects_str = "Objects on the board: none"
+
+        # Format collected objects
+        if collected_objects_info:
+            collected_str = "Objects the human has collected:\n"
+            for obj in collected_objects_info:
+                props = obj['properties']
+                props_str = ", ".join(f"{k}={v}" for k, v in props.items())
+                collected_str += f"  - {props_str}\n"
+        else:
+            collected_str = "Objects the human has collected: none yet"
+
+        prompt = f"""You are a robot working with a human to collect objects in a shared environment. You both want to maximize the same reward. You need to understand what properties give reward so you can help collect valuable objects.
+
+Current situation:
+{objects_str}
+
+{collected_str}
+
+Generate an open-ended, informative question (1 sentence) to ask the human that will help you decide which features are valuable to collect.
+
+Focus on asking about properties that are:
+1. Relevant (currently on the board)
+2. Important
+3. Uncertain according to your current beliefs
+
+Output only the question, nothing else."""
+
+        messages = [
+            {"role": "system", "content": "You are a robot assistant that generates clear, strategic questions to reduce uncertainty."},
+            {"role": "user", "content": prompt}
+        ]
+
+        response = self._call_llm(messages, temperature=0.7)
+        return response.strip()
+
+    def generate_query_with_beliefs(
+        self,
+        feature_distances: Dict[str, float],
+        belief_mean: Dict[str, float],
+        belief_variance: Dict[str, float]
+    ) -> str:
+        """
+        Generate a query using unique features with distances and robot beliefs (mean/variance).
+
+        This is the "beliefs" mode.
+
+        Args:
+            feature_distances: Dict mapping feature names to distance to closest object with that feature
+            belief_mean: Dict mapping feature names to belief mean
+            belief_variance: Dict mapping feature names to belief variance
+
+        Returns:
+            Natural language question string
+        """
+        # Format features with distances and beliefs
+        if feature_distances:
+            features_str = "Unique features on the board (with distance to closest object and robot beliefs):\n"
+            features_str += f"{'Feature':<15} | {'Distance':<10} | {'Mean':<10} | {'Variance':<10}\n"
+            features_str += "-" * 52 + "\n"
+
+            # Sort by variance (descending) to show most uncertain first
+            sorted_features = sorted(feature_distances.keys(),
+                                    key=lambda f: belief_variance.get(f, 0),
+                                    reverse=True)
+
+            for feature in sorted_features:
+                dist = feature_distances[feature]
+                mean = belief_mean.get(feature, 0.0)
+                var = belief_variance.get(feature, 1.0)
+                features_str += f"{feature:<15} | {dist:<10.2f} | {mean:<10.3f} | {var:<10.3f}\n"
+        else:
+            features_str = "No features on the board"
+
+        prompt = f"""You are a robot working with a human to collect objects in a shared environment. You both want to maximize the same reward. You need to understand what properties give reward so you can help collect valuable objects.
+
+Current situation:
+{features_str}
+
+The Mean column shows your current belief about how valuable each feature is (higher = more valuable).
+The Variance column shows your uncertainty (higher = more uncertain).
+
+Generate an open-ended, informative question (1 sentence) to ask the human that will help you decide which features are valuable to collect.
+
+Focus on asking about properties that are:
+1. Relevant (currently on the board)
+2. Important (have a high normalized value)
+3. Uncertain according to your current beliefs
+
+Output only the question, nothing else."""
+
+        messages = [
+            {"role": "system", "content": "You are a robot assistant that generates clear, strategic questions to reduce uncertainty."},
+            {"role": "user", "content": prompt}
+        ]
+
+        response = self._call_llm(messages, temperature=0.7)
+        return response.strip()
+
+    def generate_preference_query(
+        self,
+        object1_info: Dict,
+        object2_info: Dict,
+        robot_position: Tuple[int, int]
+    ) -> str:
+        """
+        Generate a query asking which of two objects the human prefers.
+
+        This is the "preference" mode.
+
+        Args:
+            object1_info: Dict with 'id', 'position', 'properties' for first object
+            object2_info: Dict with 'id', 'position', 'properties' for second object
+            robot_position: Robot's current position (x, y)
+
+        Returns:
+            Natural language question string asking about preference between two objects
+        """
+        # Format object 1
+        props1 = object1_info['properties']
+        props1_str = ", ".join(f"{k}={v}" for k, v in props1.items())
+        pos1 = object1_info['position']
+        dist1 = ((pos1[0] - robot_position[0])**2 + (pos1[1] - robot_position[1])**2)**0.5
+
+        # Format object 2
+        props2 = object2_info['properties']
+        props2_str = ", ".join(f"{k}={v}" for k, v in props2.items())
+        pos2 = object2_info['position']
+        dist2 = ((pos2[0] - robot_position[0])**2 + (pos2[1] - robot_position[1])**2)**0.5
+
+        prompt = f"""You are a robot working with a human to collect objects in a shared environment. You both want to maximize the same reward. You need to understand which objects are more valuable.
+
+You want to ask the human which of these two objects they would prefer you to collect:
+
+Object A: {props1_str} (distance: {dist1:.1f})
+Object B: {props2_str} (distance: {dist2:.1f})
+
+Generate a natural question (1 sentence) asking the human which of these two objects they would prefer you to collect next.
+
+Focus on asking about objects that are:
+1. Relevant (currently on the board)
+2. Important
+3. Uncertain according to your current beliefs
+
+Output only the question, nothing else."""
+
+        messages = [
+            {"role": "system", "content": "You are a robot assistant that generates clear, strategic questions to reduce uncertainty."},
+            {"role": "user", "content": prompt}
+        ]
+
+        response = self._call_llm(messages, temperature=0.7)
+        return response.strip()
+
+    def generate_eig_query(
+        self,
+        features_a: List[str],
+        features_b: List[str],
+        active_categories: List[str]
+    ) -> str:
+        """
+        Generate a natural language query for an EIG-selected pairwise comparison.
         
+        This verbalizes the optimal query selected by the Expected Information Gain algorithm.
+        
+        Args:
+            features_a: List of feature names for option A
+            features_b: List of feature names for option B  
+            active_categories: List of active property categories
+            
+        Returns:
+            Natural language question string
+        """
+        features_a_str = " and ".join(features_a) if features_a else "no special features"
+        features_b_str = " and ".join(features_b) if features_b else "no special features"
+        
+        prompt = f"""You are a robot working with a human to collect objects in a shared environment. You both want to maximize the same reward.
+
+You want to ask the human which of these two hypothetical objects they would prefer:
+
+Option A: An object with features: {features_a_str}
+Option B: An object with features: {features_b_str}
+
+Generate a natural, clear question (1-2 sentences) asking the human which option they would prefer. Make sure to clearly describe both options.
+
+Output only the question, nothing else."""
+
+        messages = [
+            {"role": "system", "content": "You are a robot assistant that generates clear, strategic questions to learn preferences."},
+            {"role": "user", "content": prompt}
+        ]
+
         response = self._call_llm(messages, temperature=0.7)
         return response.strip()
     
@@ -198,8 +427,110 @@ Output only valid JSON in this format: {{"property_value1": weight1, "property_v
         for prop in property_values:
             if prop not in weights:
                 weights[prop] = 0.0
-        
+
         return weights
+
+    def interpret_preference_response(
+        self,
+        query: str,
+        response: str,
+        object1_info: Dict,
+        object2_info: Dict
+    ) -> Optional[int]:
+        """
+        Interpret which object the human prefers from their response.
+
+        Args:
+            query: The question that was asked
+            response: The human's response
+            object1_info: Dict with 'id', 'position', 'properties' for first object (Object A)
+            object2_info: Dict with 'id', 'position', 'properties' for second object (Object B)
+
+        Returns:
+            1 if human prefers object 1 (A), 2 if human prefers object 2 (B), None if unclear
+        """
+        props1_str = ", ".join(f"{k}={v}" for k, v in object1_info['properties'].items())
+        props2_str = ", ".join(f"{k}={v}" for k, v in object2_info['properties'].items())
+
+        prompt = f"""Analyze this conversation and determine which object the human prefers.
+
+Question asked: "{query}"
+Human's response: "{response}"
+
+Object A: {props1_str}
+Object B: {props2_str}
+
+Based on the human's response, which object do they prefer?
+Output ONLY one of the following:
+- "A" if they prefer Object A
+- "B" if they prefer Object B
+- "unclear" if you cannot determine their preference"""
+
+        messages = [
+            {"role": "system", "content": "You are an assistant that extracts preferences from natural language. Output only A, B, or unclear."},
+            {"role": "user", "content": prompt}
+        ]
+
+        llm_output = self._call_llm(messages, temperature=0.3)
+        llm_output = llm_output.strip().upper()
+
+        if "A" in llm_output and "B" not in llm_output:
+            return 1
+        elif "B" in llm_output and "A" not in llm_output:
+            return 2
+        else:
+            return None
+
+    def interpret_eig_response(
+        self,
+        query: str,
+        response: str,
+        features_a: List[str],
+        features_b: List[str]
+    ) -> Optional[int]:
+        """
+        Interpret which option the human prefers from their response to an EIG query.
+        
+        Args:
+            query: The question that was asked
+            response: The human's response
+            features_a: Features of option A
+            features_b: Features of option B
+            
+        Returns:
+            1 if human prefers option A, 2 if human prefers option B, None if unclear
+        """
+        features_a_str = ", ".join(features_a)
+        features_b_str = ", ".join(features_b)
+        
+        prompt = f"""Analyze this conversation and determine which option the human prefers.
+
+Question asked: "{query}"
+Human's response: "{response}"
+
+Option A has features: {features_a_str}
+Option B has features: {features_b_str}
+
+Based on the human's response, which option do they prefer?
+Output ONLY one of the following:
+- "A" if they prefer Option A
+- "B" if they prefer Option B
+- "unclear" if you cannot determine their preference"""
+
+        messages = [
+            {"role": "system", "content": "You are an assistant that extracts preferences from natural language. Output only A, B, or unclear."},
+            {"role": "user", "content": prompt}
+        ]
+
+        llm_output = self._call_llm(messages, temperature=0.3)
+        llm_output = llm_output.strip().upper()
+
+        if "A" in llm_output and "B" not in llm_output:
+            return 1
+        elif "B" in llm_output and "A" not in llm_output:
+            return 2
+        else:
+            return None
 
 
 class SimulatedHumanResponder:
@@ -290,6 +621,91 @@ Question from the robot: "{query}"
 
 Generate a natural, helpful, and accurate response (1-3 sentences) that answers the question. Do not provide information that is not directly asked for in the question.
 Do not mention any preferences that are not in your list of true preferences. Don't mention numbers explicitly but instead describe the values in natural language.
+
+Output only your response, nothing else."""
+
+        messages = [
+            {"role": "system", "content": "You are simulating a helpful human collaborator who clearly communicates their preferences."},
+            {"role": "user", "content": prompt}
+        ]
+
+        response = self.llm._call_llm(messages, temperature=0.7)
+        return response.strip()
+
+    def respond_to_eig_query(
+        self,
+        query: str,
+        features_a: List[str],
+        features_b: List[str],
+        board_properties: List[str],
+        collected_properties: List[str]
+    ) -> str:
+        """
+        Generate a response to an EIG-based pairwise preference query.
+        
+        Args:
+            query: The question asked
+            features_a: Features of option A
+            features_b: Features of option B
+            board_properties: Properties currently on the board
+            collected_properties: Properties from objects human has collected
+            
+        Returns:
+            Natural language response indicating preference
+        """
+        # Calculate utility of each option based on true preferences
+        if self.property_value_rewards:
+            utility_a = sum(self.property_value_rewards.get(f, 0) for f in features_a)
+            utility_b = sum(self.property_value_rewards.get(f, 0) for f in features_b)
+        else:
+            utility_a = sum(1 for f in features_a if f in self.reward_properties)
+            utility_b = sum(1 for f in features_b if f in self.reward_properties)
+        
+        if utility_a > utility_b:
+            preferred = "A"
+            preferred_features = features_a
+        elif utility_b > utility_a:
+            preferred = "B"
+            preferred_features = features_b
+        else:
+            # Equal utility - pick randomly or A by default
+            preferred = "A"
+            preferred_features = features_a
+        
+        features_a_str = ", ".join(features_a)
+        features_b_str = ", ".join(features_b)
+        
+        if self.verbose:
+            print(f"[SimulatedHuman] EIG Query Response:")
+            print(f"    Option A features: {features_a}, utility: {utility_a}")
+            print(f"    Option B features: {features_b}, utility: {utility_b}")
+            print(f"    Preferred: {preferred}")
+        
+        # Format rewarding properties for context
+        if self.property_value_rewards:
+            sorted_rewards = sorted(
+                self.property_value_rewards.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )
+            rewards_list = [f"{prop}: {reward:+.2f}" for prop, reward in sorted_rewards]
+            rewarding_props_str = "\n  ".join(rewards_list)
+        else:
+            rewarding_props_str = ", ".join(self.reward_properties)
+        
+        prompt = f"""You are simulating a human in a collaborative environment where you and a robot are collecting objects together to maximize reward.
+
+Your true reward values for each property:
+  {rewarding_props_str}
+
+Question from the robot: "{query}"
+
+Option A has features: {features_a_str}
+Option B has features: {features_b_str}
+
+Based on your TRUE reward values, you prefer Option {preferred} because it has features: {", ".join(preferred_features)}.
+
+Generate a natural, helpful response (1-2 sentences) that clearly indicates you prefer Option {preferred}. Be specific about why you prefer it based on the features.
 
 Output only your response, nothing else."""
 

@@ -5,9 +5,17 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 import heapq
 import numpy as np
+from itertools import combinations, product
 
 from ..objects import PROPERTY_CATEGORIES, PROPERTY_VALUES
 from ..llm_interface import LLMInterface, SimulatedHumanResponder
+
+
+def sigmoid(x: np.ndarray) -> np.ndarray:
+    """Numerically stable sigmoid function."""
+    return np.where(x >= 0, 
+                    1 / (1 + np.exp(-x)), 
+                    np.exp(x) / (1 + np.exp(x)))
 
 
 @dataclass
@@ -149,6 +157,25 @@ class GaussianBeliefState:
         if rng is None:
             rng = np.random.RandomState()
         return rng.multivariate_normal(self.mean, self.covariance)
+
+    def compute_differential_entropy(self) -> float:
+        """
+        Compute the differential entropy of the Gaussian belief.
+        
+        H[θ] = 0.5 * (d * ln(2πe) + ln(det(Σ)))
+        
+        Returns:
+            Differential entropy in nats
+        """
+        d = self.num_features
+        sign, logdet = np.linalg.slogdet(self.covariance)
+        if sign <= 0:
+            # Use pseudo-determinant for numerical stability
+            eigenvalues = np.linalg.eigvalsh(self.covariance)
+            eigenvalues = np.maximum(eigenvalues, 1e-10)
+            logdet = np.sum(np.log(eigenvalues))
+        
+        return 0.5 * (d * np.log(2 * np.pi * np.e) + logdet)
 
     def update_from_choice_plackett_luce(
         self,
@@ -325,6 +352,371 @@ class GaussianBeliefState:
         eigenvalues = np.maximum(eigenvalues, 0.001)
         self.covariance = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
 
+    def update_from_pairwise_choice_bradley_terry(
+        self,
+        chosen_features: np.ndarray,
+        rejected_features: np.ndarray,
+        learning_rate: float = 0.1,
+        num_gradient_steps: int = 50,
+        convergence_tol: float = 1e-6
+    ):
+        """
+        Update beliefs from a pairwise preference observation using Bradley-Terry model.
+        
+        p(chosen | chosen, rejected, θ) = σ(θ · (chosen - rejected))
+        
+        Uses Laplace approximation (MAP + Hessian) for posterior update.
+        
+        Args:
+            chosen_features: Feature vector of chosen option
+            rejected_features: Feature vector of rejected option
+            learning_rate: Step size for gradient updates
+            num_gradient_steps: Maximum number of gradient ascent steps
+            convergence_tol: Stop when gradient norm falls below this
+        """
+        # Difference vector
+        diff = chosen_features - rejected_features
+        
+        # Prior precision and mean
+        prior_precision = np.linalg.inv(self.covariance)
+        prior_mean = self.mean.copy()
+        
+        # === Step 1: Find MAP estimate via gradient ascent ===
+        theta = self.mean.copy()
+        
+        for step in range(num_gradient_steps):
+            # Bradley-Terry probability
+            logit = np.dot(theta, diff)
+            prob = sigmoid(np.array([logit]))[0]
+            
+            # Gradient of log-likelihood: (1 - p(chosen)) * diff
+            grad_likelihood = (1 - prob) * diff
+            
+            # Gradient of log-prior: -Σ^{-1}(θ - μ)
+            grad_prior = -prior_precision @ (theta - prior_mean)
+            
+            # Total gradient
+            gradient = grad_likelihood + grad_prior
+            
+            if np.linalg.norm(gradient) < convergence_tol:
+                break
+            
+            theta = theta + learning_rate * gradient
+        
+        # === Step 2: Compute Hessian at MAP ===
+        logit = np.dot(theta, diff)
+        prob = sigmoid(np.array([logit]))[0]
+        
+        # Hessian of negative log-likelihood: p(1-p) * diff * diff^T
+        fisher_info = prob * (1 - prob) * np.outer(diff, diff)
+        
+        # Hessian of negative log-posterior
+        H = prior_precision + fisher_info
+        
+        # === Step 3: New covariance is H^{-1} ===
+        try:
+            new_covariance = np.linalg.inv(H)
+        except np.linalg.LinAlgError:
+            new_covariance = np.linalg.pinv(H)
+        
+        # Ensure symmetry and positive definiteness
+        new_covariance = 0.5 * (new_covariance + new_covariance.T)
+        eigenvalues, eigenvectors = np.linalg.eigh(new_covariance)
+        eigenvalues = np.maximum(eigenvalues, 1e-6)
+        new_covariance = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+        
+        self.mean = theta
+        self.covariance = new_covariance
+
+
+class EIGQuerySelector:
+    """
+    Selects optimal pairwise comparison queries using Expected Information Gain (EIG).
+    
+    Based on the BOED framework from Handa et al. (2024):
+    - Uses Bradley-Terry model for pairwise preferences
+    - Estimates EIG via Monte Carlo sampling from the posterior
+    - Queries are pairs of binary feature vectors
+    """
+    
+    def __init__(
+        self,
+        num_features: int,
+        features_per_option: int = 2,
+        num_mc_samples: int = 100,
+        num_candidate_queries: int = 500,
+        rng: np.random.RandomState = None
+    ):
+        """
+        Args:
+            num_features: Total number of features
+            features_per_option: Number of features active per option (K in the paper)
+            num_mc_samples: Number of Monte Carlo samples for EIG estimation
+            num_candidate_queries: Number of candidate queries to evaluate
+            rng: Random state
+        """
+        self.num_features = num_features
+        self.features_per_option = features_per_option
+        self.num_mc_samples = num_mc_samples
+        self.num_candidate_queries = num_candidate_queries
+        self.rng = rng if rng is not None else np.random.RandomState()
+    
+    def _generate_candidate_queries(
+        self,
+        available_feature_indices: List[int] = None
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
+        """
+        Generate candidate pairwise comparison queries.
+        
+        Each query is a pair (option_a, option_b) where each option is a binary
+        feature vector with exactly `features_per_option` active features.
+        
+        Args:
+            available_feature_indices: If provided, only use these feature indices
+            
+        Returns:
+            List of (option_a, option_b) tuples
+        """
+        if available_feature_indices is None:
+            available_feature_indices = list(range(self.num_features))
+        
+        candidates = []
+        
+        # If we have few enough features, enumerate all combinations
+        n_available = len(available_feature_indices)
+        k = min(self.features_per_option, n_available)
+        
+        # Generate all possible options with k active features
+        all_options = list(combinations(available_feature_indices, k))
+        
+        if len(all_options) * (len(all_options) - 1) // 2 <= self.num_candidate_queries:
+            # Enumerate all pairs
+            for i, opt_a_indices in enumerate(all_options):
+                for opt_b_indices in all_options[i+1:]:
+                    # Create binary vectors
+                    opt_a = np.zeros(self.num_features)
+                    opt_b = np.zeros(self.num_features)
+                    for idx in opt_a_indices:
+                        opt_a[idx] = 1.0
+                    for idx in opt_b_indices:
+                        opt_b[idx] = 1.0
+                    candidates.append((opt_a, opt_b))
+        else:
+            # Sample random queries
+            for _ in range(self.num_candidate_queries):
+                # Sample indices for option A
+                opt_a_indices = self.rng.choice(
+                    available_feature_indices, size=k, replace=False
+                )
+                # Sample indices for option B (different from A)
+                remaining = [i for i in available_feature_indices if i not in opt_a_indices]
+                if len(remaining) >= k:
+                    opt_b_indices = self.rng.choice(remaining, size=k, replace=False)
+                else:
+                    # Allow some overlap if not enough remaining
+                    opt_b_indices = self.rng.choice(
+                        available_feature_indices, size=k, replace=False
+                    )
+                
+                opt_a = np.zeros(self.num_features)
+                opt_b = np.zeros(self.num_features)
+                for idx in opt_a_indices:
+                    opt_a[idx] = 1.0
+                for idx in opt_b_indices:
+                    opt_b[idx] = 1.0
+                
+                candidates.append((opt_a, opt_b))
+        
+        return candidates
+    
+    def _compute_bradley_terry_prob(
+        self,
+        theta: np.ndarray,
+        option_a: np.ndarray,
+        option_b: np.ndarray
+    ) -> float:
+        """
+        Compute Bradley-Terry probability p(choose A | A, B, θ).
+        
+        p(A | A, B, θ) = σ(θ · (A - B))
+        """
+        diff = option_a - option_b
+        logit = np.dot(theta, diff)
+        return sigmoid(np.array([logit]))[0]
+    
+    def _estimate_eig(
+        self,
+        belief: GaussianBeliefState,
+        option_a: np.ndarray,
+        option_b: np.ndarray
+    ) -> float:
+        """
+        Estimate Expected Information Gain for a pairwise query using Monte Carlo.
+        
+        EIG(q) = E_{p(y|q)}[H[θ] - H[θ|y,q]]
+               = H[θ] - E_{p(y|q)}[H[θ|y,q]]
+        
+        For Bradley-Terry model with Gaussian posterior approximation:
+        1. Sample θ from current posterior
+        2. For each θ, compute p(y=A|θ) and p(y=B|θ)
+        3. Estimate marginal p(y=A) and p(y=B) by averaging
+        4. Compute expected posterior entropy via Laplace approximation
+        
+        Args:
+            belief: Current belief state
+            option_a: Feature vector for option A
+            option_b: Feature vector for option B
+            
+        Returns:
+            Estimated EIG in nats
+        """
+        # Current entropy H[θ]
+        prior_entropy = belief.compute_differential_entropy()
+        
+        # Sample theta values from posterior
+        theta_samples = []
+        for _ in range(self.num_mc_samples):
+            theta_samples.append(belief.sample_weights(self.rng))
+        theta_samples = np.array(theta_samples)
+        
+        # Compute p(y=A|θ) for each sample
+        probs_a = np.array([
+            self._compute_bradley_terry_prob(theta, option_a, option_b)
+            for theta in theta_samples
+        ])
+        probs_b = 1 - probs_a
+        
+        # Marginal probabilities (average over samples)
+        p_a = np.mean(probs_a)
+        p_b = np.mean(probs_b)
+        
+        # For numerical stability
+        p_a = np.clip(p_a, 1e-10, 1 - 1e-10)
+        p_b = np.clip(p_b, 1e-10, 1 - 1e-10)
+        
+        # Estimate posterior entropy for each outcome via Laplace approximation
+        # H[θ|y,q] ≈ 0.5 * (d * ln(2πe) + ln(det(Σ_post)))
+        
+        diff = option_a - option_b
+        
+        # For y=A: The posterior precision increases by Fisher info
+        # Fisher = p(1-p) * diff * diff^T, where p = σ(θ·diff)
+        # We estimate this at the posterior mean
+        
+        def estimate_posterior_entropy(choice_a: bool) -> float:
+            """Estimate posterior entropy after observing choice."""
+            # Compute expected Fisher information at posterior mean
+            logit = np.dot(belief.mean, diff)
+            prob = sigmoid(np.array([logit]))[0]
+            
+            # Fisher information
+            fisher_info = prob * (1 - prob) * np.outer(diff, diff)
+            
+            # Posterior precision = prior precision + Fisher
+            try:
+                prior_precision = np.linalg.inv(belief.covariance)
+            except np.linalg.LinAlgError:
+                prior_precision = np.linalg.pinv(belief.covariance)
+            
+            posterior_precision = prior_precision + fisher_info
+            
+            # Posterior covariance
+            try:
+                posterior_cov = np.linalg.inv(posterior_precision)
+            except np.linalg.LinAlgError:
+                posterior_cov = np.linalg.pinv(posterior_precision)
+            
+            # Ensure positive definiteness
+            eigenvalues = np.linalg.eigvalsh(posterior_cov)
+            eigenvalues = np.maximum(eigenvalues, 1e-10)
+            logdet = np.sum(np.log(eigenvalues))
+            
+            d = belief.num_features
+            return 0.5 * (d * np.log(2 * np.pi * np.e) + logdet)
+        
+        # The posterior entropy is approximately the same regardless of outcome
+        # (since we're using Laplace approximation at the same point)
+        posterior_entropy = estimate_posterior_entropy(True)
+        
+        # EIG = H[θ] - E[H[θ|y]]
+        # Since posterior entropy is approximately the same for both outcomes:
+        eig = prior_entropy - posterior_entropy
+        
+        return max(0, eig)  # EIG should be non-negative
+    
+    def select_optimal_query(
+        self,
+        belief: GaussianBeliefState,
+        available_feature_indices: List[int] = None,
+        verbose: bool = False
+    ) -> Tuple[np.ndarray, np.ndarray, float]:
+        """
+        Select the pairwise query with highest Expected Information Gain.
+        
+        Args:
+            belief: Current belief state
+            available_feature_indices: If provided, only use these features
+            verbose: Print debug info
+            
+        Returns:
+            Tuple of (option_a, option_b, eig_value)
+        """
+        candidates = self._generate_candidate_queries(available_feature_indices)
+        
+        if not candidates:
+            # Fallback: random query
+            opt_a = np.zeros(self.num_features)
+            opt_b = np.zeros(self.num_features)
+            indices = list(range(self.num_features))
+            k = min(self.features_per_option, len(indices))
+            for idx in self.rng.choice(indices, size=k, replace=False):
+                opt_a[idx] = 1.0
+            remaining = [i for i in indices if opt_a[i] == 0]
+            if len(remaining) >= k:
+                for idx in self.rng.choice(remaining, size=k, replace=False):
+                    opt_b[idx] = 1.0
+            else:
+                for idx in self.rng.choice(indices, size=k, replace=False):
+                    opt_b[idx] = 1.0
+            return opt_a, opt_b, 0.0
+        
+        best_query = None
+        best_eig = -float('inf')
+        
+        for opt_a, opt_b in candidates:
+            eig = self._estimate_eig(belief, opt_a, opt_b)
+            if eig > best_eig:
+                best_eig = eig
+                best_query = (opt_a, opt_b)
+        
+        if verbose:
+            print(f"[EIG Query Selection] Best EIG: {best_eig:.4f}")
+            print(f"  Option A features: {np.where(best_query[0] == 1)[0]}")
+            print(f"  Option B features: {np.where(best_query[1] == 1)[0]}")
+        
+        return best_query[0], best_query[1], best_eig
+    
+    def compute_realized_information_gain(
+        self,
+        belief_before: GaussianBeliefState,
+        belief_after: GaussianBeliefState
+    ) -> float:
+        """
+        Compute the realized information gain from a query.
+        
+        IG = H[θ_before] - H[θ_after]
+        
+        Args:
+            belief_before: Belief state before query
+            belief_after: Belief state after query
+            
+        Returns:
+            Realized information gain in nats
+        """
+        entropy_before = belief_before.compute_differential_entropy()
+        entropy_after = belief_after.compute_differential_entropy()
+        return max(0, entropy_before - entropy_after)
+
 
 class BeliefBasedRobotAgent:
     """
@@ -352,11 +744,12 @@ class BeliefBasedRobotAgent:
         num_property_values: int = 5,
         llm_interface: Optional[LLMInterface] = None,
         query_budget: int = 5,
-        participation_ratio_threshold: float = 3.0,
+        query_mode: str = "sampled_actions",
         action_confidence_threshold: float = 0.6,
         plackett_luce_learning_rate: float = 0.1,
         plackett_luce_gradient_steps: int = 5,
         linear_gaussian_noise_variance: float = 1.0,
+        eig_num_mc_samples: int = 100,
         verbose: bool = False,
         seed: Optional[int] = None
     ):
@@ -368,7 +761,13 @@ class BeliefBasedRobotAgent:
             num_property_values: Number of values per property category
             llm_interface: Interface to LLM for queries
             query_budget: Maximum queries per episode
-            participation_ratio_threshold: (DEPRECATED) Old trigger using participation ratio
+            query_mode: Mode for query generation. Options:
+                - "sampled_actions": Include Thompson sampling votes in prompt (default)
+                - "state": Include objects on board with properties/distance and human-collected objects
+                - "beliefs": Include unique features with distance and robot beliefs (mean/variance)
+                - "preference": Ask which object the human prefers between two objects
+                - "eig": Use Expected Information Gain to select optimal pairwise query.
+                         Each option will have exactly one feature per active property category.
             action_confidence_threshold: Trigger query when action confidence < this value.
                 Action confidence measures how consistently posterior samples agree on the
                 best object to target. Range [0, 1]:
@@ -378,6 +777,7 @@ class BeliefBasedRobotAgent:
             plackett_luce_learning_rate: Learning rate for Plackett-Luce mean updates
             plackett_luce_gradient_steps: Number of gradient steps per observation
             linear_gaussian_noise_variance: Observation noise for linear-Gaussian updates
+            eig_num_mc_samples: Number of MC samples for EIG estimation
             verbose: Print debug information
             seed: Random seed
         """
@@ -387,11 +787,12 @@ class BeliefBasedRobotAgent:
         self.num_property_values = num_property_values
         self.llm = llm_interface
         self.query_budget = query_budget
-        self.pr_threshold = participation_ratio_threshold
+        self.query_mode = query_mode
         self.action_confidence_threshold = action_confidence_threshold
         self.pl_learning_rate = plackett_luce_learning_rate
         self.pl_gradient_steps = plackett_luce_gradient_steps
         self.lg_noise_variance = linear_gaussian_noise_variance
+        self.eig_num_mc_samples = eig_num_mc_samples
         self.verbose = verbose
 
         # Random generator
@@ -411,6 +812,9 @@ class BeliefBasedRobotAgent:
         # Initialize belief state (will be reset per episode)
         self.belief: Optional[GaussianBeliefState] = None
 
+        # EIG query selector (initialized when needed)
+        self.eig_selector: Optional[EIGQuerySelector] = None
+
         # Current target tracking
         self.current_target_object_id: Optional[int] = None
         self.current_target_position: Optional[Tuple[int, int]] = None
@@ -419,6 +823,9 @@ class BeliefBasedRobotAgent:
         # Query tracking
         self.queries_used: int = 0
         self.query_history: List[Dict] = []
+
+        # Information gain tracking
+        self.information_gain_history: List[Dict] = []
 
         # Observation tracking
         self.observed_object_ids: Set[int] = set()
@@ -455,11 +862,23 @@ class BeliefBasedRobotAgent:
         # Initialize prior belief N(0, I) with correct dimensionality
         self.belief = GaussianBeliefState.create_prior(self.feature_names)
 
+        # Initialize EIG selector if using EIG mode
+        if self.query_mode == "eig":
+            # For EIG mode, each option has one feature per active category
+            features_per_option = len(self.active_categories)
+            self.eig_selector = EIGQuerySelector(
+                num_features=len(self.feature_names),
+                features_per_option=features_per_option,
+                num_mc_samples=self.eig_num_mc_samples,
+                rng=self.rng
+            )
+
         if self.verbose:
             print(f"\n[Belief Reset]")
             print(f"  Active Categories: {self.active_categories}")
             print(f"  Number of Features: {len(self.feature_names)}")
             print(f"  Initial Participation Ratio: {self.belief.compute_participation_ratio():.3f}")
+            print(f"  Initial Entropy: {self.belief.compute_differential_entropy():.3f}")
 
         # Reset target tracking
         self.current_target_object_id = None
@@ -469,6 +888,9 @@ class BeliefBasedRobotAgent:
         # Reset query tracking
         self.queries_used = 0
         self.query_history = []
+
+        # Reset information gain tracking
+        self.information_gain_history = []
 
         # Reset observation tracking
         self.observed_object_ids = set()
@@ -726,18 +1148,31 @@ class BeliefBasedRobotAgent:
 
         return should_query
 
-    def _execute_query(self, observation: dict) -> Tuple[Dict[str, float], str, str]:
+    def _execute_query(self, observation: dict) -> Tuple[Dict[str, float], str, str, float]:
         """
         Execute a query to the human and return extracted weights.
 
+        The query generation method depends on self.query_mode:
+        - "sampled_actions": Use Thompson sampling votes (default)
+        - "state": Include objects with properties/distance and human-collected objects
+        - "beliefs": Include unique features with distance and robot beliefs (mean/variance)
+        - "preference": Ask which object the human prefers between two objects
+        - "eig": Use Expected Information Gain to select optimal pairwise query
+
         Returns:
-            Tuple of (weights dict, query string, response string)
+            Tuple of (weights dict, query string, response string, entropy_before)
         """
         if self.llm is None or self.human_responder is None:
-            return {}, "", ""
+            return {}, "", "", 0.0
+
+        # Store belief state before query for information gain calculation
+        belief_before_mean = self.belief.mean.copy()
+        belief_before_cov = self.belief.covariance.copy()
+        entropy_before = self.belief.compute_differential_entropy()
 
         # Gather board properties
         objects = observation.get('objects', {})
+        robot_position = observation.get('robot_position', (0, 0))
         board_properties = []
         for obj_data in objects.values():
             board_properties.extend(obj_data['properties'].values())
@@ -750,10 +1185,82 @@ class BeliefBasedRobotAgent:
             collected_properties.extend(collected['properties'].values())
         collected_properties = list(dict.fromkeys(collected_properties))
 
-        # Compute Thompson sampling vote distribution for features
-        # Run Thompson sampling to see which objects are selected
-        confidence, best_obj, details = self._compute_action_confidence(observation, num_samples=100)
+        # Generate query based on mode
+        if self.query_mode == "state":
+            query = self._generate_query_state_mode(observation, robot_position)
+            response = self.human_responder.respond_to_query(
+                query, board_properties, collected_properties
+            )
+            property_weights = self.llm.interpret_response(
+                query, response, board_properties, collected_properties,
+                self.feature_names, self.active_categories
+            )
+            update_method = "linear_gaussian"
+        elif self.query_mode == "beliefs":
+            query = self._generate_query_beliefs_mode(observation, robot_position)
+            response = self.human_responder.respond_to_query(
+                query, board_properties, collected_properties
+            )
+            property_weights = self.llm.interpret_response(
+                query, response, board_properties, collected_properties,
+                self.feature_names, self.active_categories
+            )
+            update_method = "linear_gaussian"
+        elif self.query_mode == "preference":
+            result = self._execute_preference_query(
+                observation, robot_position, board_properties, collected_properties
+            )
+            property_weights, query, response = result
+            update_method = "linear_gaussian"
+        elif self.query_mode == "eig":
+            result = self._execute_eig_query(
+                observation, robot_position, board_properties, collected_properties
+            )
+            property_weights, query, response = result
+            update_method = "bradley_terry"
+        else:  # "sampled_actions" (default)
+            query = self._generate_query_sampled_actions_mode(observation, board_properties)
+            response = self.human_responder.respond_to_query(
+                query, board_properties, collected_properties
+            )
+            property_weights = self.llm.interpret_response(
+                query, response, board_properties, collected_properties,
+                self.feature_names, self.active_categories
+            )
+            update_method = "linear_gaussian"
+
+        # Normalize weights using L2 norm (for non-EIG modes)
+        if update_method == "linear_gaussian":
+            weights_array = np.array([property_weights.get(f, 0.0) for f in self.feature_names])
+            l2_norm = np.linalg.norm(weights_array)
+            if l2_norm > 1e-10:
+                weights_array = weights_array / l2_norm
+                property_weights = {
+                    f: weights_array[i] for i, f in enumerate(self.feature_names)
+                }
+
+        # For EIG mode, belief update already happened inside _execute_eig_query
+        # For non-EIG modes, belief update will happen in caller
+        # In both cases, information gain will be computed in caller after belief update
         
+        # Store basic query info in history (information_gain will be updated later)
+        self.query_history.append({
+            'query': query,
+            'response': response,
+            'weights': property_weights,
+            'board_properties': board_properties,
+            'collected_properties': collected_properties,
+            'query_mode': self.query_mode,
+            'information_gain': 0.0  # Will be updated after belief update
+        })
+        
+        return property_weights, query, response, entropy_before
+
+    def _generate_query_sampled_actions_mode(self, observation: dict, board_properties: List[str]) -> str:
+        """Generate query using Thompson sampling votes (default mode)."""
+        # Compute Thompson sampling vote distribution for features
+        confidence, best_obj, details = self._compute_action_confidence(observation, num_samples=100)
+
         # Extract feature vote counts from Thompson sampling
         thompson_votes = self._compute_feature_votes_from_thompson(observation, details)
 
@@ -762,17 +1269,147 @@ class BeliefBasedRobotAgent:
             print("\n[Thompson Sampling Vote Distribution]")
             print(f"{'Feature':<15} | {'Normalized Value':<20}")
             print("-" * 38)
-            # Sort by normalized value (descending) for better readability
             sorted_votes = sorted(thompson_votes.items(), key=lambda x: x[1], reverse=True)
             for feature, norm_value in sorted_votes:
                 print(f"{feature:<15} | {norm_value:<20.3f}")
             print()
 
-        # Generate query
-        query = self.llm.generate_query(
+        return self.llm.generate_query(
             board_properties,
             thompson_votes,
             self.active_categories
+        )
+
+    def _generate_query_state_mode(self, observation: dict, robot_position: Tuple[int, int]) -> str:
+        """Generate query using objects on board with properties/distance and human-collected objects."""
+        objects = observation.get('objects', {})
+        human_collected = observation.get('human_collected', [])
+
+        # Format objects info
+        objects_info = []
+        for obj_id, obj_data in objects.items():
+            objects_info.append({
+                'id': obj_id,
+                'position': obj_data['position'],
+                'properties': obj_data['properties']
+            })
+
+        # Format collected objects info
+        collected_objects_info = []
+        for collected in human_collected:
+            collected_objects_info.append({
+                'id': collected.get('id', 'unknown'),
+                'properties': collected['properties']
+            })
+
+        if self.verbose:
+            print(f"\n[Query Mode: state]")
+            print(f"  Objects on board: {len(objects_info)}")
+            print(f"  Human collected: {len(collected_objects_info)}")
+
+        return self.llm.generate_query_with_state(
+            objects_info,
+            collected_objects_info,
+            robot_position
+        )
+
+    def _generate_query_beliefs_mode(self, observation: dict, robot_position: Tuple[int, int]) -> str:
+        """Generate query using unique features with distance and robot beliefs."""
+        objects = observation.get('objects', {})
+
+        # Compute feature distances (distance to closest object with each feature)
+        feature_distances = {}
+        for feature in self.feature_names:
+            min_dist = float('inf')
+            for obj_data in objects.values():
+                if feature in obj_data['properties'].values():
+                    pos = obj_data['position']
+                    dist = ((pos[0] - robot_position[0])**2 + (pos[1] - robot_position[1])**2)**0.5
+                    min_dist = min(min_dist, dist)
+            if min_dist < float('inf'):
+                feature_distances[feature] = min_dist
+
+        # Get belief mean and variance for each feature
+        belief_mean = {}
+        belief_variance = {}
+        if self.belief is not None:
+            for i, feature in enumerate(self.feature_names):
+                belief_mean[feature] = self.belief.mean[i]
+                belief_variance[feature] = self.belief.covariance[i, i]
+
+        if self.verbose:
+            print(f"\n[Query Mode: beliefs]")
+            print(f"  Features on board: {len(feature_distances)}")
+            if belief_mean:
+                print("  Top 5 features by mean:")
+                sorted_by_mean = sorted(belief_mean.items(), key=lambda x: x[1], reverse=True)[:5]
+                for feat, mean in sorted_by_mean:
+                    var = belief_variance.get(feat, 0)
+                    print(f"    {feat}: mean={mean:.3f}, var={var:.3f}")
+
+        return self.llm.generate_query_with_beliefs(
+            feature_distances,
+            belief_mean,
+            belief_variance
+        )
+
+    def _execute_preference_query(
+        self,
+        observation: dict,
+        robot_position: Tuple[int, int],
+        board_properties: List[str],
+        collected_properties: List[str]
+    ) -> Tuple[Dict[str, float], str, str]:
+        """Execute a preference query asking which of two objects the human prefers."""
+        objects = observation.get('objects', {})
+
+        if len(objects) < 2:
+            # Not enough objects to compare
+            return {}, "", ""
+
+        # Select two objects to compare
+        # Strategy: Pick two objects with high uncertainty (variance in predicted value)
+        object_list = list(objects.items())
+
+        if self.belief is not None:
+            # Score each object by variance in predicted reward
+            object_scores = []
+            for obj_id, obj_data in object_list:
+                feature_vec = self.belief.get_object_feature_vector(obj_data['properties'])
+                # Compute variance of predicted reward: var(w^T x) = x^T Sigma x
+                pred_var = feature_vec @ self.belief.covariance @ feature_vec
+                object_scores.append((obj_id, obj_data, pred_var))
+
+            # Sort by variance (descending) and pick top 2
+            object_scores.sort(key=lambda x: x[2], reverse=True)
+            obj1_id, obj1_data, _ = object_scores[0]
+            obj2_id, obj2_data, _ = object_scores[1] if len(object_scores) > 1 else object_scores[0]
+        else:
+            # Random selection if no belief
+            obj1_id, obj1_data = object_list[0]
+            obj2_id, obj2_data = object_list[1] if len(object_list) > 1 else object_list[0]
+
+        object1_info = {
+            'id': obj1_id,
+            'position': obj1_data['position'],
+            'properties': obj1_data['properties']
+        }
+        object2_info = {
+            'id': obj2_id,
+            'position': obj2_data['position'],
+            'properties': obj2_data['properties']
+        }
+
+        if self.verbose:
+            print(f"\n[Query Mode: preference]")
+            print(f"  Object A: {object1_info['properties']}")
+            print(f"  Object B: {object2_info['properties']}")
+
+        # Generate preference query
+        query = self.llm.generate_preference_query(
+            object1_info,
+            object2_info,
+            robot_position
         )
 
         # Get human response
@@ -782,35 +1419,228 @@ class BeliefBasedRobotAgent:
             collected_properties
         )
 
-        # Interpret response
-        property_weights = self.llm.interpret_response(
+        # Interpret preference response
+        preference = self.llm.interpret_preference_response(
             query,
             response,
-            board_properties,
-            collected_properties,
-            self.feature_names,
-            self.active_categories
+            object1_info,
+            object2_info
         )
 
-        # Normalize using L2 norm
-        weights_array = np.array([property_weights.get(f, 0.0) for f in self.feature_names])
-        l2_norm = np.linalg.norm(weights_array)
-        if l2_norm > 1e-10:
-            weights_array = weights_array / l2_norm
-            property_weights = {
-                f: weights_array[i] for i, f in enumerate(self.feature_names)
-            }
+        # Convert preference to weights
+        # If human prefers object A, increase weights for A's features, decrease for B's
+        property_weights = {f: 0.0 for f in self.feature_names}
 
-        # Store in history
-        self.query_history.append({
-            'query': query,
-            'response': response,
-            'weights': property_weights,
-            'board_properties': board_properties,
-            'collected_properties': collected_properties
-        })
-        self.queries_used += 1
+        if preference == 1:
+            # Human prefers object A
+            for prop_val in object1_info['properties'].values():
+                if prop_val in property_weights:
+                    property_weights[prop_val] = 1.0
+            for prop_val in object2_info['properties'].values():
+                if prop_val in property_weights:
+                    property_weights[prop_val] = -1.0
+        elif preference == 2:
+            # Human prefers object B
+            for prop_val in object2_info['properties'].values():
+                if prop_val in property_weights:
+                    property_weights[prop_val] = 1.0
+            for prop_val in object1_info['properties'].values():
+                if prop_val in property_weights:
+                    property_weights[prop_val] = -1.0
 
+        return property_weights, query, response
+
+    def _execute_eig_query(
+        self,
+        observation: dict,
+        robot_position: Tuple[int, int],
+        board_properties: List[str],
+        collected_properties: List[str]
+    ) -> Tuple[Dict[str, float], str, str]:
+        """
+        Execute a query using Expected Information Gain to select optimal pairwise comparison.
+        
+        Each option will have exactly one feature from each active property category.
+        Uses Plackett-Luce update treating the chosen option as if collected at distance 1.
+        """
+        if self.eig_selector is None:
+            features_per_option = len(self.active_categories)
+            self.eig_selector = EIGQuerySelector(
+                num_features=len(self.feature_names),
+                features_per_option=features_per_option,
+                num_mc_samples=self.eig_num_mc_samples,
+                rng=self.rng
+            )
+
+        # Generate candidate queries where each option has one feature per category
+        # Group feature indices by category
+        category_to_indices = {}
+        for i, feature in enumerate(self.feature_names):
+            for category in self.active_categories:
+                if feature in PROPERTY_VALUES[category]:
+                    category_to_indices.setdefault(category, []).append(i)
+                    break
+        
+        # Get all possible combinations of features (one per category)
+        category_options = []
+        for category in self.active_categories:
+            indices = category_to_indices.get(category, [])
+            if indices:
+                category_options.append(indices)
+            else:
+                # If no features for this category, use empty
+                category_options.append([])
+        
+        # Generate all possible options (one feature per category)
+        all_options = []
+        for combo in product(*category_options):
+            option_vec = np.zeros(len(self.feature_names))
+            for idx in combo:
+                option_vec[idx] = 1.0
+            all_options.append(option_vec)
+        
+        # Generate candidate pairs and compute EIG for each
+        best_eig = -float('inf')
+        best_query = None
+        
+        num_candidates = min(200, len(all_options) * (len(all_options) - 1) // 2)
+        candidates_checked = 0
+        
+        for i, opt_a in enumerate(all_options):
+            for opt_b in all_options[i+1:]:
+                eig = self.eig_selector._estimate_eig(self.belief, opt_a, opt_b)
+                if eig > best_eig:
+                    best_eig = eig
+                    best_query = (opt_a, opt_b)
+                
+                candidates_checked += 1
+                if candidates_checked >= num_candidates:
+                    break
+            if candidates_checked >= num_candidates:
+                break
+        
+        if best_query is None:
+            # Fallback: random query
+            opt_a = all_options[0] if all_options else np.zeros(len(self.feature_names))
+            opt_b = all_options[1] if len(all_options) > 1 else np.zeros(len(self.feature_names))
+            best_query = (opt_a, opt_b)
+            best_eig = 0.0
+        
+        option_a, option_b = best_query
+        expected_eig = best_eig
+
+        # Convert feature vectors to feature names and properties dict
+        features_a = [self.feature_names[i] for i in range(len(self.feature_names)) if option_a[i] > 0.5]
+        features_b = [self.feature_names[i] for i in range(len(self.feature_names)) if option_b[i] > 0.5]
+        
+        # Create properties dicts for Plackett-Luce update
+        properties_a = {}
+        properties_b = {}
+        for feature in features_a:
+            for category in self.active_categories:
+                if feature in PROPERTY_VALUES[category]:
+                    properties_a[category] = feature
+                    break
+        for feature in features_b:
+            for category in self.active_categories:
+                if feature in PROPERTY_VALUES[category]:
+                    properties_b[category] = feature
+                    break
+
+        # Store previous belief state for comparison
+        prev_mean = self.belief.mean.copy()
+        prev_variances = np.array([self.belief.covariance[i, i] for i in range(self.belief.num_features)])
+
+        # Generate natural language query using LLM
+        query = self.llm.generate_eig_query(
+            features_a,
+            features_b,
+            self.active_categories
+        )
+        
+        print("\n" + "=" * 120)
+        print("EIG QUERY")
+        print("=" * 120)
+        print(f"\nQuery: {query}")
+        print(f"\nOption A: {properties_a}")
+        print(f"  Features: {features_a}")
+        print(f"\nOption B: {properties_b}")
+        print(f"  Features: {features_b}")
+        print(f"\nExpected EIG: {expected_eig:.4f}")
+
+        # Get human response
+        response = self.human_responder.respond_to_eig_query(
+            query,
+            features_a,
+            features_b,
+            board_properties,
+            collected_properties
+        )
+        
+        print(f"\nHuman Response: {response}")
+
+        # Interpret response to determine preference
+        preference = self.llm.interpret_eig_response(
+            query,
+            response,
+            features_a,
+            features_b
+        )
+        
+        print(f"\nInterpreted Preference: {'Option A' if preference == 1 else 'Option B' if preference == 2 else 'Unclear'}")
+
+        # Update belief using Plackett-Luce model
+        # Treat as if human collected the preferred option at distance 1
+        # with the other option as the only alternative
+        if preference == 1:
+            chosen_properties = properties_a
+            alternative_properties = properties_b
+        elif preference == 2:
+            chosen_properties = properties_b
+            alternative_properties = properties_a
+        else:
+            chosen_properties = None
+            alternative_properties = None
+
+        if chosen_properties is not None:
+            # Use Plackett-Luce update (reduces to Bradley-Terry for 2 options)
+            self.belief.update_from_choice_plackett_luce(
+                chosen_object=chosen_properties,
+                alternative_objects=[chosen_properties, alternative_properties],
+                chosen_distance=1.0,
+                alternative_distances=[1.0, 1.0],
+                learning_rate=self.pl_learning_rate,
+                num_gradient_steps=self.pl_gradient_steps
+            )
+            
+            # Print belief update
+            curr_mean = self.belief.mean
+            curr_variances = np.array([self.belief.covariance[i, i] for i in range(self.belief.num_features)])
+            mean_deltas = curr_mean - prev_mean
+            variance_deltas = curr_variances - prev_variances
+            
+            print(f"\n" + "-" * 120)
+            print("BELIEF UPDATE (Plackett-Luce)")
+            print("-" * 120)
+            print(f"{'Feature':<15} {'Prev Mean':>12} {'New Mean':>12} {'Δ Mean':>12} {'Prev Var':>12} {'New Var':>12} {'Δ Var':>12}")
+            print("-" * 120)
+            
+            # Sort by absolute mean delta
+            feature_deltas = [(i, feature, abs(mean_deltas[i])) for i, feature in enumerate(self.feature_names)]
+            feature_deltas.sort(key=lambda x: x[2], reverse=True)
+            
+            for i, feature, _ in feature_deltas:
+                marker = " *" if self.true_reward_properties and feature in self.true_reward_properties else ""
+                print(f"{feature:<15} {prev_mean[i]:>+12.4f} {curr_mean[i]:>+12.4f} {mean_deltas[i]:>+12.4f} "
+                      f"{prev_variances[i]:>12.4f} {curr_variances[i]:>12.4f} {variance_deltas[i]:>+12.4f}{marker}")
+            
+            print("-" * 120)
+            print("* indicates true rewarding property")
+            print("=" * 120 + "\n")
+
+        # Return empty weights dict since we updated belief directly
+        property_weights = {}
+        
         return property_weights, query, response
 
     def _update_belief_from_observation(
@@ -1216,14 +2046,44 @@ class BeliefBasedRobotAgent:
                     prev_mean = self.belief.mean.copy()
                     prev_variances = np.array([self.belief.covariance[i, i] for i in range(self.belief.num_features)])
                 
-                weights, query, response = self._execute_query(observation)
-                self.belief.update_from_linear_gaussian(
-                    weights,
-                    observation_noise_variance=self.lg_noise_variance
-                )
+                weights, query, response, entropy_before = self._execute_query(observation)
+                
+                # For non-EIG modes, update belief from weights
+                if self.query_mode != "eig" and weights:
+                    self.belief.update_from_linear_gaussian(
+                        weights,
+                        observation_noise_variance=self.lg_noise_variance
+                    )
+                
+                # Compute realized information gain AFTER belief update
+                entropy_after = self.belief.compute_differential_entropy()
+                realized_ig = max(0, entropy_before - entropy_after)
+                
+                # Store information gain in history
+                self.information_gain_history.append({
+                    'query_num': self.queries_used + 1,
+                    'query_mode': self.query_mode,
+                    'entropy_before': entropy_before,
+                    'entropy_after': entropy_after,
+                    'information_gain': realized_ig,
+                    'query': query,
+                    'response': response
+                })
+                
+                # Update the last entry in query_history with the realized information gain
+                if self.query_history:
+                    self.query_history[-1]['information_gain'] = realized_ig
+                
+                # Increment queries used counter
+                self.queries_used += 1
+                
+                # Print information gain
+                if self.verbose:
+                    print(f"[Information Gain] Query {self.queries_used}: IG={realized_ig:.4f} nats")
+                    print(f"  Entropy before: {entropy_before:.4f}, after: {entropy_after:.4f}")
                 
                 # Print query update table
-                if self.verbose:
+                if self.verbose and weights:
                     self._print_query_update_table(prev_mean, prev_variances, query, response, weights)
 
             # Select new target
@@ -1255,6 +2115,14 @@ class BeliefBasedRobotAgent:
 
     def get_query_stats(self) -> Dict:
         """Get statistics about queries and beliefs."""
+        # Compute average information gain
+        if self.information_gain_history:
+            avg_ig = np.mean([h['information_gain'] for h in self.information_gain_history])
+            total_ig = np.sum([h['information_gain'] for h in self.information_gain_history])
+        else:
+            avg_ig = 0.0
+            total_ig = 0.0
+
         return {
             'queries_used': self.queries_used,
             'query_budget': self.query_budget,
@@ -1262,7 +2130,10 @@ class BeliefBasedRobotAgent:
             'participation_ratio': self.belief.compute_participation_ratio() if self.belief else 0.0,
             'expected_weights': self.belief.get_expected_weights() if self.belief else {},
             'entropy_history': self.entropy_history,
-            'decision_history': self.decision_history
+            'decision_history': self.decision_history,
+            'information_gain_history': self.information_gain_history,
+            'average_information_gain': avg_ig,
+            'total_information_gain': total_ig
         }
 
     def get_inferred_properties(self) -> List[Tuple[str, float]]:

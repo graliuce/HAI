@@ -13,7 +13,6 @@ from .objects import (
     PROPERTY_VALUES,
     MAX_PROPERTY_VALUES,
     create_random_object,
-    sample_reward_properties,
     get_property_values,
 )
 
@@ -24,6 +23,9 @@ class GridWorld:
 
     The human knows which object properties give reward.
     The robot must infer this from observing the human's behavior.
+
+    Uses additive valuation: each property value has a Gaussian reward,
+    and object reward is the sum of its property value rewards.
     """
 
     # Actions: 0=up, 1=down, 2=left, 3=right, 4=stay
@@ -34,11 +36,8 @@ class GridWorld:
         self,
         grid_size: int = 10,
         num_objects: int = 20,
-        reward_ratio: float = 0.3,
-        num_rewarding_properties: int = 2,
         num_distinct_properties: int = 2,
         num_property_values: int = MAX_PROPERTY_VALUES,
-        additive_valuation: bool = False,
         seed: Optional[int] = None
     ):
         """
@@ -47,21 +46,14 @@ class GridWorld:
         Args:
             grid_size: Size of the square grid (grid_size x grid_size)
             num_objects: Total number of objects to place in the grid
-            reward_ratio: Proportion of objects that should be rewarding (approximate)
-            num_rewarding_properties: K - number of properties that give reward
             num_distinct_properties: Number of property categories that vary (1-5)
             num_property_values: Number of values per property category (1-5, default 5)
-            additive_valuation: If True, use additive valuation reward mode where each
-                property value has a Gaussian reward and object reward is sum of its values
             seed: Random seed for reproducibility
         """
         self.grid_size = grid_size
         self.num_objects = num_objects
-        self.reward_ratio = reward_ratio
-        self.num_rewarding_properties = num_rewarding_properties
         self.num_distinct_properties = min(num_distinct_properties, 5)
         self.num_property_values = max(1, min(num_property_values, MAX_PROPERTY_VALUES))
-        self.additive_valuation = additive_valuation
 
         self.rng = random.Random(seed)
         self.np_rng = np.random.RandomState(seed)
@@ -72,7 +64,7 @@ class GridWorld:
         # State variables (initialized in reset)
         self.objects: Dict[int, GridObject] = {}
         self.reward_properties: Set[str] = set()
-        # For additive valuation mode: maps property value -> reward
+        # Maps property value -> reward
         self.property_value_rewards: Dict[str, float] = {}
         self.human_position: Tuple[int, int] = (0, 0)
         self.robot_position: Tuple[int, int] = (0, 0)
@@ -96,22 +88,11 @@ class GridWorld:
         self.done = False
         self.property_value_rewards = {}
 
-        if self.additive_valuation:
-            # Sample Gaussian rewards for each property value
-            self._sample_property_value_rewards()
-            # Generate objects (no need for reward_properties in additive mode)
-            self.reward_properties = set()
-            self._generate_objects_additive()
-        else:
-            # Original mode: sample reward properties
-            self.reward_properties = sample_reward_properties(
-                self.num_rewarding_properties,
-                self.active_categories,
-                self.rng,
-                self.num_property_values
-            )
-            # Generate objects ensuring some are rewarding
-            self._generate_objects()
+        # Sample Gaussian rewards for each property value
+        self._sample_property_value_rewards()
+        # Generate objects (no need for reward_properties in additive mode)
+        self.reward_properties = set()
+        self._generate_objects()
 
         # Place agents at random positions (not on objects)
         occupied = {obj.position for obj in self.objects.values()}
@@ -123,23 +104,23 @@ class GridWorld:
 
     def _sample_property_value_rewards(self):
         """Sample Gaussian rewards for each property value in active categories.
-        
+
         For ordinal properties (size, opacity), imposes linear structure where
         adjacent values have similar rewards. For other properties, samples independently.
         """
         self.property_value_rewards = {}
-        
+
         # Properties with natural ordinal structure
         ordinal_properties = ['size', 'opacity']
-        
+
         for category in self.active_categories:
             values = get_property_values(category, self.num_property_values)
-            
+
             if category in ordinal_properties:
                 # For ordinal properties, sample a slope and create linear structure
                 # The slope determines the strength and direction of preference
                 slope = self.np_rng.randn()
-                
+
                 # Create linearly spaced rewards centered at 0
                 n = len(values)
                 for i, value in enumerate(values):
@@ -157,23 +138,16 @@ class GridWorld:
         """
         Get the total reward for an object.
 
-        In additive valuation mode, this is the sum of rewards for all its property values.
-        In standard mode, this is +1 if rewarding, -1 if not.
+        This is the sum of rewards for all its property values.
         """
-        if self.additive_valuation:
-            total = 0.0
-            for value in obj.get_property_values():
-                if value in self.property_value_rewards:
-                    total += self.property_value_rewards[value]
-            return total
-        else:
-            if obj.has_any_property(self.reward_properties):
-                return 1.0
-            else:
-                return -1.0
+        total = 0.0
+        for value in obj.get_property_values():
+            if value in self.property_value_rewards:
+                total += self.property_value_rewards[value]
+        return total
 
-    def _generate_objects_additive(self):
-        """Generate objects for additive valuation mode (no reward-based filtering)."""
+    def _generate_objects(self):
+        """Generate objects for the environment."""
         occupied_positions = set()
 
         for obj_id in range(self.num_objects):
@@ -183,74 +157,6 @@ class GridWorld:
             )
             self.objects[obj_id] = obj
             occupied_positions.add(position)
-
-    def _generate_objects(self):
-        """Generate objects ensuring approximately reward_ratio are rewarding."""
-        target_rewarding = int(self.num_objects * self.reward_ratio)
-        target_non_rewarding = self.num_objects - target_rewarding
-
-        occupied_positions = set()
-        temp_objects = []  # Collect objects in a list first
-
-        # First, create rewarding objects
-        rewarding_created = 0
-        attempts = 0
-        max_attempts = self.num_objects * 10
-
-        while rewarding_created < target_rewarding and attempts < max_attempts:
-            position = self._get_random_empty_position(occupied_positions)
-            obj = create_random_object(
-                0, position, self.active_categories, self.rng, self.num_property_values
-            )
-
-            if obj.has_any_property(self.reward_properties):
-                temp_objects.append((position, obj))
-                occupied_positions.add(position)
-                rewarding_created += 1
-
-            attempts += 1
-
-        # Then, create non-rewarding objects
-        non_rewarding_created = 0
-        attempts = 0
-
-        while non_rewarding_created < target_non_rewarding and attempts < max_attempts:
-            position = self._get_random_empty_position(occupied_positions)
-            obj = create_random_object(
-                0, position, self.active_categories, self.rng, self.num_property_values
-            )
-
-            if not obj.has_any_property(self.reward_properties):
-                temp_objects.append((position, obj))
-                occupied_positions.add(position)
-                non_rewarding_created += 1
-
-            attempts += 1
-
-        # If we couldn't create enough non-rewarding, just fill with random
-        while len(temp_objects) < self.num_objects:
-            position = self._get_random_empty_position(occupied_positions)
-            obj = create_random_object(
-                0, position, self.active_categories, self.rng, self.num_property_values
-            )
-            temp_objects.append((position, obj))
-            occupied_positions.add(position)
-
-        # Shuffle the objects to remove correlation between ID and reward status
-        self.rng.shuffle(temp_objects)
-
-        # Assign final IDs after shuffling
-        for obj_id, (position, obj) in enumerate(temp_objects):
-            # Create new object with correct ID
-            self.objects[obj_id] = GridObject(
-                id=obj_id,
-                position=position,
-                color=obj.color,
-                shape=obj.shape,
-                size=obj.size,
-                pattern=obj.pattern,
-                opacity=obj.opacity
-            )
 
     def _get_random_empty_position(
         self,
@@ -303,21 +209,16 @@ class GridWorld:
         """
         Get the current observation for the human.
 
-        The human also observes the reward properties.
-        In additive valuation mode, also includes property_value_rewards
-        and precomputed object_rewards.
+        The human also observes the reward properties and precomputed object_rewards.
         """
         obs = self._get_robot_observation()
         obs['reward_properties'] = self.reward_properties
-        obs['additive_valuation'] = self.additive_valuation
-
-        if self.additive_valuation:
-            obs['property_value_rewards'] = self.property_value_rewards.copy()
-            # Precompute object rewards for human decision-making
-            obs['object_rewards'] = {
-                obj_id: self.get_object_reward(obj)
-                for obj_id, obj in self.objects.items()
-            }
+        obs['property_value_rewards'] = self.property_value_rewards.copy()
+        # Precompute object rewards for human decision-making
+        obs['object_rewards'] = {
+            obj_id: self.get_object_reward(obj)
+            for obj_id, obj in self.objects.items()
+        }
         return obs
 
     def step(
@@ -420,17 +321,11 @@ class GridWorld:
 
     def _no_rewarding_objects_left(self) -> bool:
         """Check if there are no more rewarding objects."""
-        if self.additive_valuation:
-            # In additive mode, consider objects with positive reward as rewarding
-            for obj in self.objects.values():
-                if self.get_object_reward(obj) > 0:
-                    return False
-            return True
-        else:
-            for obj in self.objects.values():
-                if obj.has_any_property(self.reward_properties):
-                    return False
-            return True
+        # Consider objects with positive reward as rewarding
+        for obj in self.objects.values():
+            if self.get_object_reward(obj) > 0:
+                return False
+        return True
 
     @staticmethod
     def _l2_distance(pos1: Tuple[int, int], pos2: Tuple[int, int]) -> float:
@@ -438,18 +333,11 @@ class GridWorld:
         return ((pos1[0] - pos2[0]) ** 2 + (pos1[1] - pos2[1]) ** 2) ** 0.5
 
     def get_rewarding_objects(self) -> List[GridObject]:
-        """Get list of objects that give reward."""
-        if self.additive_valuation:
-            # In additive mode, consider objects with positive reward as rewarding
-            return [
-                obj for obj in self.objects.values()
-                if self.get_object_reward(obj) > 0
-            ]
-        else:
-            return [
-                obj for obj in self.objects.values()
-                if obj.has_any_property(self.reward_properties)
-            ]
+        """Get list of objects that give positive reward."""
+        return [
+            obj for obj in self.objects.values()
+            if self.get_object_reward(obj) > 0
+        ]
 
     def render(self) -> str:
         """Render the environment as a string."""
@@ -458,10 +346,7 @@ class GridWorld:
         # Place objects
         for obj in self.objects.values():
             x, y = obj.position
-            is_rewarding = (
-                self.get_object_reward(obj) > 0 if self.additive_valuation
-                else obj.has_any_property(self.reward_properties)
-            )
+            is_rewarding = self.get_object_reward(obj) > 0
             if is_rewarding:
                 grid[y][x] = '*'  # Rewarding object
             else:
@@ -489,7 +374,6 @@ class GridWorld:
         lines.append(f"Objects remaining: {len(self.objects)}")
         lines.append(f"Human collected: {len(self.human_collected)}")
         lines.append(f"Robot collected: {len(self.robot_collected)}")
-        lines.append(f"Reward properties: {self.reward_properties}")
 
         return '\n'.join(lines)
 
@@ -559,10 +443,7 @@ class GridWorld:
             opacity = OPACITY_MAP.get(props['opacity'], 1.0)
 
             # Check if rewarding
-            is_rewarding = (
-                self.get_object_reward(obj) > 0 if self.additive_valuation
-                else obj.has_any_property(self.reward_properties)
-            )
+            is_rewarding = self.get_object_reward(obj) > 0
             edgecolor = 'gold' if is_rewarding else 'black'
             linewidth = 3 if is_rewarding else 1
 
@@ -639,12 +520,8 @@ class GridWorld:
         robot_reward = sum(self.get_object_reward(obj) for obj in self.robot_collected)
 
         # Add title with episode info
-        if self.additive_valuation:
-            reward_info = 'Additive Valuation Mode'
-            reward_display = f'Human Reward: {human_reward:+.2f} | Robot Reward: {robot_reward:+.2f}'
-        else:
-            reward_info = f'Reward Properties: {", ".join(sorted(self.reward_properties))}'
-            reward_display = f'Human Reward: {human_reward:+.0f} | Robot Reward: {robot_reward:+.0f}'
+        reward_info = 'Additive Valuation Mode'
+        reward_display = f'Human Reward: {human_reward:+.2f} | Robot Reward: {robot_reward:+.2f}'
 
         title_lines = [
             f'Step: {self.step_count}/{self.max_steps}',
@@ -738,10 +615,7 @@ class GridWorld:
             pattern = PATTERN_MAP.get(props['pattern'], '')
             opacity = OPACITY_MAP.get(props['opacity'], 1.0)
 
-            is_rewarding = (
-                self.get_object_reward(obj) > 0 if self.additive_valuation
-                else obj.has_any_property(self.reward_properties)
-            )
+            is_rewarding = self.get_object_reward(obj) > 0
             edgecolor = 'gold' if is_rewarding else 'black'
             linewidth = 3 if is_rewarding else 1
 
@@ -814,12 +688,8 @@ class GridWorld:
         robot_reward = sum(self.get_object_reward(obj) for obj in self.robot_collected)
 
         # Add title
-        if self.additive_valuation:
-            reward_info = 'Additive Mode'
-            reward_display = f'H: {human_reward:+.2f}  R: {robot_reward:+.2f}'
-        else:
-            reward_info = f'Reward: {", ".join(sorted(self.reward_properties))}'
-            reward_display = f'H: {human_reward:+.0f}  R: {robot_reward:+.0f}'
+        reward_info = 'Additive Mode'
+        reward_display = f'H: {human_reward:+.2f}  R: {robot_reward:+.2f}'
 
         title_lines = [
             f'Step: {self.step_count}/{self.max_steps}  |  '
@@ -829,17 +699,17 @@ class GridWorld:
         ax.set_title('\n'.join(title_lines), fontsize=10, pad=5)
 
         # Add true reward values on the left side
-        if self.additive_valuation and hasattr(self, 'property_value_rewards'):
+        if hasattr(self, 'property_value_rewards'):
             # Get property value rewards
             prop_rewards = self.property_value_rewards
             sorted_rewards = sorted(prop_rewards.items(), key=lambda x: x[1], reverse=True)
-            
+
             # Create text showing top positive and negative rewards
             reward_text = "Property Rewards:\n" + "-" * 20 + "\n"
             for prop, reward in sorted_rewards[:8]:  # Show top 8
                 sign = "+" if reward >= 0 else ""
                 reward_text += f"{prop:12s} {sign}{reward:.2f}\n"
-            
+
             # Add text box on the left side
             fig.text(
                 0.02, 0.5, reward_text,
@@ -854,17 +724,17 @@ class GridWorld:
         if query_info:
             weights = query_info.get('weights', {})
             query_num = query_info.get('query_num', 0)
-            
+
             # Filter to show only non-zero weights, sorted by absolute value
             non_zero_weights = {k: v for k, v in weights.items() if abs(v) > 0.01}
             sorted_weights = sorted(non_zero_weights.items(), key=lambda x: abs(x[1]), reverse=True)
-            
+
             # Create text for top weights
             query_text = f"Query {query_num}:\n" + "-" * 20 + "\n"
             for i, (prop, weight) in enumerate(sorted_weights[:8]):  # Show up to 8
                 sign = "+" if weight > 0 else ""
                 query_text += f"{prop:12s} {sign}{weight:.2f}\n"
-            
+
             # Add text box on the right side
             fig.text(
                 0.98, 0.5, query_text,
