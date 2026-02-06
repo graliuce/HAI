@@ -26,7 +26,7 @@ class LLMInterface:
                 "or OPENAI_API_KEY environment variable."
             )
     
-    def _call_llm(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+    def _call_llm(self, messages: List[Dict[str, str]]) -> str:
         """Call OpenAI API."""
         try:
             from openai import OpenAI
@@ -35,7 +35,6 @@ class LLMInterface:
             response = client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                temperature=temperature
             )
             
             response_text = response.choices[0].message.content
@@ -53,7 +52,6 @@ class LLMInterface:
             data = {
                 "model": self.model,
                 "messages": messages,
-                "temperature": temperature
             }
             
             response = requests.post(
@@ -129,7 +127,7 @@ Output only the question, nothing else."""
             {"role": "user", "content": prompt}
         ]
 
-        response = self._call_llm(messages, temperature=0.7)
+        response = self._call_llm(messages)
         return response.strip()
 
     def generate_query_with_state(
@@ -197,7 +195,7 @@ Output only the question, nothing else."""
             {"role": "user", "content": prompt}
         ]
 
-        response = self._call_llm(messages, temperature=0.7)
+        response = self._call_llm(messages)
         return response.strip()
 
     def generate_query_with_beliefs(
@@ -260,7 +258,7 @@ Output only the question, nothing else."""
             {"role": "user", "content": prompt}
         ]
 
-        response = self._call_llm(messages, temperature=0.7)
+        response = self._call_llm(messages)
         return response.strip()
 
     def generate_preference_query(
@@ -315,7 +313,7 @@ Output only the question, nothing else."""
             {"role": "user", "content": prompt}
         ]
 
-        response = self._call_llm(messages, temperature=0.7)
+        response = self._call_llm(messages)
         return response.strip()
 
     def generate_eig_query(
@@ -356,7 +354,7 @@ Output only the question, nothing else."""
             {"role": "user", "content": prompt}
         ]
 
-        response = self._call_llm(messages, temperature=0.7)
+        response = self._call_llm(messages)
         return response.strip()
     
     def interpret_response(
@@ -411,7 +409,7 @@ Output only valid JSON in this format: {{"property_value1": weight1, "property_v
             {"role": "user", "content": prompt}
         ]
         
-        llm_output = self._call_llm(messages, temperature=0.3)
+        llm_output = self._call_llm(messages)
         
         # Clean up response
         llm_output = llm_output.strip()
@@ -471,7 +469,7 @@ Output ONLY one of the following:
             {"role": "user", "content": prompt}
         ]
 
-        llm_output = self._call_llm(messages, temperature=0.3)
+        llm_output = self._call_llm(messages)
         llm_output = llm_output.strip().upper()
 
         if "A" in llm_output and "B" not in llm_output:
@@ -522,7 +520,7 @@ Output ONLY one of the following:
             {"role": "user", "content": prompt}
         ]
 
-        llm_output = self._call_llm(messages, temperature=0.3)
+        llm_output = self._call_llm(messages)
         llm_output = llm_output.strip().upper()
 
         if "A" in llm_output and "B" not in llm_output:
@@ -629,7 +627,7 @@ Output only your response, nothing else."""
             {"role": "user", "content": prompt}
         ]
 
-        response = self.llm._call_llm(messages, temperature=0.7)
+        response = self.llm._call_llm(messages)
         return response.strip()
 
     def respond_to_eig_query(
@@ -714,5 +712,5 @@ Output only your response, nothing else."""
             {"role": "user", "content": prompt}
         ]
 
-        response = self.llm._call_llm(messages, temperature=0.7)
+        response = self.llm._call_llm(messages)
         return response.strip()

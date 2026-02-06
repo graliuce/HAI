@@ -125,8 +125,8 @@ def parse_args():
         help="Number of gradient steps per Plackett-Luce update (default: 5)"
     )
     parser.add_argument(
-        "--linear-gaussian-noise-variance", type=float, default=0.5,
-        help="Noise variance for linear-Gaussian updates from queries (default: 0.5)"
+        "--linear-gaussian-noise-variance", type=float, default=0.1,
+        help="Noise variance for linear-Gaussian updates from queries (default: 0.1)"
     )
 
     # EIG-specific parameters
@@ -237,16 +237,47 @@ def plot_results(
         print(f"Query usage plot saved to: {plot_path}")
         plt.close()
 
-        # Plot information gain if available
-        avg_ig = [summary[p].get('avg_information_gain', 0) for p in prop_counts]
-        if any(ig > 0 for ig in avg_ig):
+        # Plot information gain if available: separate query vs observation IG
+        avg_query_ig = [summary[p].get('avg_query_information_gain', 0) for p in prop_counts]
+        avg_obs_ig = [summary[p].get('avg_observation_information_gain', 0) for p in prop_counts]
+        if any(ig > 0 for ig in avg_query_ig) or any(ig > 0 for ig in avg_obs_ig):
+            x = np.arange(len(prop_counts))
+            width = 0.35
+
+            query_ig_ci = [summary[p].get('query_ig_ci_95_error', 0) for p in prop_counts]
+            obs_ig_ci = [summary[p].get('obs_ig_ci_95_error', 0) for p in prop_counts]
+
             fig, ax = plt.subplots(figsize=(10, 6))
-            ax.bar(prop_counts, avg_ig, color='tab:green', edgecolor='black', alpha=0.8)
+            bars_query = ax.bar(
+                x - width / 2,
+                avg_query_ig,
+                width,
+                label='Queries',
+                color='tab:green',
+                edgecolor='black',
+                alpha=0.8,
+                yerr=query_ig_ci,
+                capsize=5,
+            )
+            bars_obs = ax.bar(
+                x + width / 2,
+                avg_obs_ig,
+                width,
+                label='Observations',
+                color='tab:purple',
+                edgecolor='black',
+                alpha=0.8,
+                yerr=obs_ig_ci,
+                capsize=5,
+            )
+
             ax.set_xlabel('Number of Distinct Properties', fontsize=12)
-            ax.set_ylabel('Average Information Gain per Query (nats)', fontsize=12)
+            ax.set_ylabel('Average Information Gain per Update (nats)', fontsize=12)
             ax.set_title(f'Information Gain vs. Property Count\n(Mode={config.query_mode})', fontsize=14)
-            ax.set_xticks(prop_counts)
+            ax.set_xticks(x)
+            ax.set_xticklabels(prop_counts)
             ax.grid(True, alpha=0.3, axis='y')
+            ax.legend()
 
             plt.tight_layout()
             plot_path = os.path.join(output_dir, 'information_gain_vs_properties.png')
@@ -412,26 +443,30 @@ def main():
 
     if config.allow_queries:
         # Check if we have information gain data
-        has_ig_data = any(summary[p].get('avg_information_gain', 0) > 0 for p in prop_counts_only)
+        has_ig_data = any(summary[p].get('avg_query_information_gain', 0) > 0 or
+                          summary[p].get('avg_observation_information_gain', 0) > 0
+                          for p in prop_counts_only)
         
         if has_ig_data:
-            print(f"\n{'Props':<8} {'Eval Mean':<12} {'95% CI':<20} {'Avg Queries':<15} {'Avg IG/Query':<15} {'Avg Total IG':<15}")
-            print("-" * 95)
+            print(f"\n{'Props':<8} {'Eval Mean':<12} {'95% CI':<20} "
+                  f"{'Avg Queries':<15} {'Avg Query IG':<15} {'Avg Obs IG':<15}")
+            print("-" * 110)
             for num_props in prop_counts_only:
                 s = summary[num_props]
                 ci_str = f"[{s['ci_95_lower']:.2f}, {s['ci_95_upper']:.2f}]"
                 print(f"{num_props:<8} {s['eval_mean']:<12.2f} {ci_str:<20} "
-                      f"{s.get('avg_queries', 0):<15.2f} {s.get('avg_information_gain', 0):<15.4f} "
-                      f"{s.get('avg_total_information_gain', 0):<15.4f}")
+                      f"{s.get('avg_queries', 0):<15.2f} "
+                      f"{s.get('avg_query_information_gain', 0):<15.4f} "
+                      f"{s.get('avg_observation_information_gain', 0):<15.4f}")
             
             # Print information gain summary
             print("\n" + "-" * 60)
             print("INFORMATION GAIN SUMMARY")
             print("-" * 60)
-            all_avg_ig = [summary[p].get('avg_information_gain', 0) for p in prop_counts_only]
-            all_total_ig = [summary[p].get('avg_total_information_gain', 0) for p in prop_counts_only]
-            print(f"Average IG per query (across all property counts): {np.mean(all_avg_ig):.4f} nats")
-            print(f"Average total IG per episode (across all property counts): {np.mean(all_total_ig):.4f} nats")
+            all_avg_query_ig = [summary[p].get('avg_query_information_gain', 0) for p in prop_counts_only]
+            all_avg_obs_ig = [summary[p].get('avg_observation_information_gain', 0) for p in prop_counts_only]
+            print(f"Average query IG per update (across property counts): {np.mean(all_avg_query_ig):.4f} nats")
+            print(f"Average observation IG per update (across property counts): {np.mean(all_avg_obs_ig):.4f} nats")
             print(f"Query mode: {config.query_mode}")
         else:
             print(f"\n{'Props':<8} {'Eval Mean':<12} {'95% CI':<20} {'Avg Queries':<15}")

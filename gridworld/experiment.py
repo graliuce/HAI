@@ -88,8 +88,11 @@ class EpisodeResult:
     entropy_history: List[Dict] = field(default_factory=list)
     # Information gain tracking
     information_gain_history: List[Dict] = field(default_factory=list)
-    average_information_gain: float = 0.0
-    total_information_gain: float = 0.0
+    # Separated information gain statistics
+    average_query_information_gain: float = 0.0
+    total_query_information_gain: float = 0.0
+    average_observation_information_gain: float = 0.0
+    total_observation_information_gain: float = 0.0
 
 
 @dataclass
@@ -104,10 +107,12 @@ class VariableExperimentResult:
     eval_avg_queries_per_property: Dict[int, float] = field(default_factory=dict)
     # Entropy statistics
     eval_entropy_stats_per_property: Dict[int, Dict] = field(default_factory=dict)
-    # Information gain statistics
-    eval_avg_ig_per_property: Dict[int, float] = field(default_factory=dict)
-    eval_total_ig_per_property: Dict[int, float] = field(default_factory=dict)
-    eval_ig_per_query_per_property: Dict[int, List[float]] = field(default_factory=dict)
+    # Separated information gain statistics
+    eval_avg_query_ig_per_property: Dict[int, float] = field(default_factory=dict)
+    eval_avg_observation_ig_per_property: Dict[int, float] = field(default_factory=dict)
+    # Raw per-update IG samples (for confidence intervals)
+    eval_query_ig_values_per_property: Dict[int, List[float]] = field(default_factory=dict)
+    eval_obs_ig_values_per_property: Dict[int, List[float]] = field(default_factory=dict)
 
 
 def run_episode(
@@ -192,8 +197,10 @@ def run_episode(
     
     # Information gain statistics
     result.information_gain_history = stats.get('information_gain_history', [])
-    result.average_information_gain = stats.get('average_information_gain', 0.0)
-    result.total_information_gain = stats.get('total_information_gain', 0.0)
+    result.average_query_information_gain = stats.get('average_query_information_gain', 0.0)
+    result.total_query_information_gain = stats.get('total_query_information_gain', 0.0)
+    result.average_observation_information_gain = stats.get('average_observation_information_gain', 0.0)
+    result.total_observation_information_gain = stats.get('total_observation_information_gain', 0.0)
 
     # Print episode summary
     if episode_num is not None:
@@ -206,8 +213,6 @@ def run_episode(
         print(f"Total Steps: {result.total_steps}")
         if result.queries_used > 0:
             print(f"Queries Used: {result.queries_used}")
-            if result.average_information_gain > 0:
-                print(f"Average Information Gain per Query: {result.average_information_gain:.4f} nats")
         print(f"{'='*100}\n")
 
     return result
@@ -392,23 +397,28 @@ def run_variable_property_experiment(
 
             # Collect information gain statistics
             if current_config.allow_queries:
-                all_ig_values = []
-                total_ig_sum = 0.0
-                
+                # Separate information gain from queries vs observations
+                all_query_ig_values = []
+                all_obs_ig_values = []
+
                 for r in eval_results:
                     if r.information_gain_history:
                         for ig_entry in r.information_gain_history:
-                            all_ig_values.append(ig_entry['information_gain'])
-                        total_ig_sum += r.total_information_gain
-                
-                if all_ig_values:
-                    result.eval_avg_ig_per_property[num_props] = np.mean(all_ig_values)
-                    result.eval_total_ig_per_property[num_props] = total_ig_sum / len(eval_results)
-                    result.eval_ig_per_query_per_property[num_props] = all_ig_values
-                else:
-                    result.eval_avg_ig_per_property[num_props] = 0.0
-                    result.eval_total_ig_per_property[num_props] = 0.0
-                    result.eval_ig_per_query_per_property[num_props] = []
+                            source = ig_entry.get('source', 'query')
+                            if source == 'observation':
+                                all_obs_ig_values.append(ig_entry['information_gain'])
+                            else:
+                                all_query_ig_values.append(ig_entry['information_gain'])
+
+                # Separated IG stats per property count
+                result.eval_avg_query_ig_per_property[num_props] = (
+                    np.mean(all_query_ig_values) if all_query_ig_values else 0.0
+                )
+                result.eval_avg_observation_ig_per_property[num_props] = (
+                    np.mean(all_obs_ig_values) if all_obs_ig_values else 0.0
+                )
+                result.eval_query_ig_values_per_property[num_props] = all_query_ig_values
+                result.eval_obs_ig_values_per_property[num_props] = all_obs_ig_values
 
                 # Collect entropy/uncertainty statistics
                 all_entropy_history = []
@@ -464,9 +474,27 @@ def summarize_variable_results(
         eval_means = [r.eval_means_per_property[num_props] for r in results]
         avg_queries = [r.eval_avg_queries_per_property.get(num_props, 0) for r in results]
         
-        # Aggregate information gain statistics
-        avg_ig_values = [r.eval_avg_ig_per_property.get(num_props, 0) for r in results if num_props in r.eval_avg_ig_per_property]
-        total_ig_values = [r.eval_total_ig_per_property.get(num_props, 0) for r in results if num_props in r.eval_total_ig_per_property]
+        # Separated IG statistics (means across seeds)
+        avg_query_ig_values = [
+            getattr(r, 'eval_avg_query_ig_per_property', {}).get(num_props, 0)
+            for r in results
+            if hasattr(r, 'eval_avg_query_ig_per_property')
+        ]
+        avg_obs_ig_values = [
+            getattr(r, 'eval_avg_observation_ig_per_property', {}).get(num_props, 0)
+            for r in results
+            if hasattr(r, 'eval_avg_observation_ig_per_property')
+        ]
+        # Raw IG samples across all seeds/episodes/updates (for CIs)
+        query_ig_samples = []
+        obs_ig_samples = []
+        for r in results:
+            query_ig_samples.extend(
+                getattr(r, 'eval_query_ig_values_per_property', {}).get(num_props, [])
+            )
+            obs_ig_samples.extend(
+                getattr(r, 'eval_obs_ig_values_per_property', {}).get(num_props, [])
+            )
 
         # Compute 95% confidence interval across all episodes and seeds
         mean_return = np.mean(all_eval_returns)
@@ -500,6 +528,31 @@ def summarize_variable_results(
             ci_95_upper = mean_return
             ci_95_error = 0.0
 
+        # 95% CIs for information gain (queries and observations), if we have samples
+        def _compute_ci(samples: List[float]) -> float:
+            if len(samples) <= 1:
+                return 0.0
+            std = np.std(samples, ddof=1)
+            n = len(samples)
+            # reuse t_crit logic; n here is number of IG samples
+            if n <= 30:
+                t_critical_values = {
+                    2: 12.706, 3: 4.303, 4: 3.182, 5: 2.776, 6: 2.571,
+                    7: 2.447, 8: 2.365, 9: 2.306, 10: 2.262, 11: 2.228,
+                    12: 2.201, 13: 2.179, 14: 2.160, 15: 2.145, 16: 2.131,
+                    17: 2.120, 18: 2.110, 19: 2.101, 20: 2.093, 21: 2.086,
+                    22: 2.080, 23: 2.074, 24: 2.069, 25: 2.064, 26: 2.060,
+                    27: 2.056, 28: 2.052, 29: 2.048, 30: 2.045
+                }
+                t_crit_local = t_critical_values.get(n, 2.045)
+            else:
+                t_crit_local = 1.96
+            sem_local = std / np.sqrt(n)
+            return t_crit_local * sem_local
+
+        query_ig_ci_error = _compute_ci(query_ig_samples) if query_ig_samples else 0.0
+        obs_ig_ci_error = _compute_ci(obs_ig_samples) if obs_ig_samples else 0.0
+
         summary[num_props] = {
             'eval_mean': mean_return,
             'eval_std': std_return,
@@ -509,8 +562,11 @@ def summarize_variable_results(
             'ci_95_error': ci_95_error,
             'n_samples': n_samples,
             'avg_queries': np.mean(avg_queries),
-            'avg_information_gain': np.mean(avg_ig_values) if avg_ig_values else 0.0,
-            'avg_total_information_gain': np.mean(total_ig_values) if total_ig_values else 0.0,
+            # Separated IG stats for plotting/analysis
+            'avg_query_information_gain': np.mean(avg_query_ig_values) if avg_query_ig_values else 0.0,
+            'avg_observation_information_gain': np.mean(avg_obs_ig_values) if avg_obs_ig_values else 0.0,
+            'query_ig_ci_95_error': query_ig_ci_error,
+            'obs_ig_ci_95_error': obs_ig_ci_error,
         }
 
     return summary

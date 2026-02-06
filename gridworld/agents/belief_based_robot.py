@@ -826,6 +826,9 @@ class BeliefBasedRobotAgent:
 
         # Information gain tracking
         self.information_gain_history: List[Dict] = []
+        # Convenience lists for different IG sources
+        self.query_information_gain_history: List[Dict] = []
+        self.observation_information_gain_history: List[Dict] = []
 
         # Observation tracking
         self.observed_object_ids: Set[int] = set()
@@ -891,6 +894,8 @@ class BeliefBasedRobotAgent:
 
         # Reset information gain tracking
         self.information_gain_history = []
+        self.query_information_gain_history = []
+        self.observation_information_gain_history = []
 
         # Reset observation tracking
         self.observed_object_ids = set()
@@ -1663,6 +1668,9 @@ class BeliefBasedRobotAgent:
             prev_mean = self.belief.mean.copy()
             prev_variances = np.array([self.belief.covariance[i, i] for i in range(self.belief.num_features)])
 
+        # Information gain: entropy before update
+        entropy_before = self.belief.compute_differential_entropy()
+
         # Get all alternative objects (including the chosen one conceptually)
         # But since the chosen object may have been removed, we reconstruct
         all_objects_props = [chosen_object['properties']]
@@ -1691,6 +1699,22 @@ class BeliefBasedRobotAgent:
             learning_rate=self.pl_learning_rate,
             num_gradient_steps=self.pl_gradient_steps
         )
+        # Information gain: entropy after update
+        entropy_after = self.belief.compute_differential_entropy()
+        realized_ig = max(0, entropy_before - entropy_after)
+
+        # Record information gain for this observation-based update
+        ig_entry = {
+            'source': 'observation',
+            'entropy_before': entropy_before,
+            'entropy_after': entropy_after,
+            'information_gain': realized_ig,
+            'num_alternatives': len(all_objects_props) - 1,
+            'chosen_distance': chosen_distance,
+            'chosen_properties': chosen_object['properties'],
+        }
+        self.information_gain_history.append(ig_entry)
+        self.observation_information_gain_history.append(ig_entry)
 
         if self.verbose:
             self._print_belief_update_table(
@@ -2115,13 +2139,22 @@ class BeliefBasedRobotAgent:
 
     def get_query_stats(self) -> Dict:
         """Get statistics about queries and beliefs."""
-        # Compute average information gain
-        if self.information_gain_history:
-            avg_ig = np.mean([h['information_gain'] for h in self.information_gain_history])
-            total_ig = np.sum([h['information_gain'] for h in self.information_gain_history])
-        else:
-            avg_ig = 0.0
-            total_ig = 0.0
+        # Separate information gain from queries vs observations
+        query_igs = [
+            h['information_gain']
+            for h in self.information_gain_history
+            if h.get('source', 'query') == 'query'
+        ]
+        obs_igs = [
+            h['information_gain']
+            for h in self.information_gain_history
+            if h.get('source', 'query') == 'observation'
+        ]
+
+        avg_query_ig = float(np.mean(query_igs)) if query_igs else 0.0
+        total_query_ig = float(np.sum(query_igs)) if query_igs else 0.0
+        avg_obs_ig = float(np.mean(obs_igs)) if obs_igs else 0.0
+        total_obs_ig = float(np.sum(obs_igs)) if obs_igs else 0.0
 
         return {
             'queries_used': self.queries_used,
@@ -2132,8 +2165,10 @@ class BeliefBasedRobotAgent:
             'entropy_history': self.entropy_history,
             'decision_history': self.decision_history,
             'information_gain_history': self.information_gain_history,
-            'average_information_gain': avg_ig,
-            'total_information_gain': total_ig
+            'average_query_information_gain': avg_query_ig,
+            'total_query_information_gain': total_query_ig,
+            'average_observation_information_gain': avg_obs_ig,
+            'total_observation_information_gain': total_obs_ig,
         }
 
     def get_inferred_properties(self) -> List[Tuple[str, float]]:
